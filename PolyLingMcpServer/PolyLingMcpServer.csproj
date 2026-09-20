@@ -1,0 +1,47 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- Unity プロジェクトの Packages フォルダ。この .csproj からの相対パスで指定する。
+       想定配置: <プロジェクト>\Packages\ と <プロジェクト>\データとツール\PolyLingMcpServer\PolyLingMcpServer\
+       配置が違う場合はこの 1 行だけ書き換える。 -->
+  <PropertyGroup>
+    <PolyLingPackagesDir>..\..\..\Packages</PolyLingPackagesDir>
+    <DuplexCoreDir>$(PolyLingPackagesDir)\com.haglib.net_duplexchannel\RunTime\Core</DuplexCoreDir>
+  </PropertyGroup>
+
+  <!-- 名前付きパイプ経路の 5 ファイルだけをリンクする。
+       コピーせず単一ソースのまま使う。
+       WebSocket 系は Newtonsoft.Json と UnityEngine.Debug に依存するため含めない。 -->
+  <ItemGroup>
+    <Compile Include="$(DuplexCoreDir)\DuplexPacket.cs"      Link="Duplex\DuplexPacket.cs" />
+    <Compile Include="$(DuplexCoreDir)\IDuplexChannel.cs"    Link="Duplex\IDuplexChannel.cs" />
+    <Compile Include="$(DuplexCoreDir)\PipeDuplexChannel.cs" Link="Duplex\PipeDuplexChannel.cs" />
+    <Compile Include="$(DuplexCoreDir)\PipeDuplexClient.cs"  Link="Duplex\PipeDuplexClient.cs" />
+    <Compile Include="$(DuplexCoreDir)\PipeDuplexServer.cs"  Link="Duplex\PipeDuplexServer.cs" />
+    <Compile Include="$(DuplexCoreDir)\TcpDuplexChannel.cs"  Link="Duplex\TcpDuplexChannel.cs" />
+    <Compile Include="$(DuplexCoreDir)\TcpDuplexClient.cs"   Link="Duplex\TcpDuplexClient.cs" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <!-- HTTP モード（起動引数 http）で / に返すブラウザ用クライアント。exe に埋め込むので、
+       起動時のカレントフォルダに関係なく返せる。LogicalName は Program.WebClientResourceName と一致させる。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="WebClient\index.html" LogicalName="PolyLingMcpServer.WebClient.index.html" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.AspNetCore"
+                      Version="2.2.0" />
+  </ItemGroup>
+
+</Project>

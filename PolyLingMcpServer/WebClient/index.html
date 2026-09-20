@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PolyLing MCP Web Client</title>
+<style>
+  :root {
+    --bg: #f4f2ec; --panel: #fffdf8; --ink: #1d1c1a; --sub: #6b675f; --line: #d9d4c7;
+    --accent: #2f5d50; --user: #e7efe9; --tool: #f1ece0; --err: #9b2c2c; --errbg: #fbeaea;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "BIZ UDGothic", monospace;
+    --sans: "BIZ UDPGothic", "Yu Gothic UI", "Hiragino Sans", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171816; --panel: #20221f; --ink: #e8e6e0; --sub: #9c988e; --line: #3a3c37;
+      --accent: #8cc4b0; --user: #243029; --tool: #2b2922; --err: #f0a0a0; --errbg: #3a2323;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.6 var(--sans); }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+           display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: end; }
+  header h1 { font: 600 15px/1 var(--mono); margin: 0 12px 6px 0; letter-spacing: .02em; }
+  label { display: flex; flex-direction: column; font-size: 12px; color: var(--sub); gap: 2px; }
+  input, textarea, button { font: inherit; color: var(--ink); }
+  input, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
+  input[type=password] { width: 22em; }
+  #model { width: 14em; } #maxTokens { width: 6em; }
+  button { background: var(--accent); color: var(--panel); border: 0; border-radius: 4px; padding: 6px 14px; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  #status { font: 12px var(--mono); color: var(--sub); margin-bottom: 6px; }
+  main { max-width: 980px; margin: 0 auto; padding: 12px 16px 170px; }
+  .msg { margin: 10px 0; padding: 8px 12px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line);
+         white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user { background: var(--user); }
+  .msg.info { background: transparent; border-style: dashed; color: var(--sub); font-size: 12px; }
+  .msg.error { background: var(--errbg); color: var(--err); border-color: var(--err); }
+  .role { font: 600 11px var(--mono); color: var(--sub); margin-bottom: 2px; }
+  details.tool { margin: 8px 0; padding: 6px 10px; background: var(--tool); border: 1px solid var(--line); border-radius: 6px; }
+  details.tool summary { cursor: pointer; font: 12px var(--mono); }
+  details.tool.failed summary { color: var(--err); }
+  details.tool pre { margin: 6px 0; font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+                     max-height: 360px; overflow: auto; }
+  details.tool img { max-width: 100%; border: 1px solid var(--line); margin-top: 4px; }
+  footer { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 16px; }
+  footer .row { max-width: 980px; margin: 0 auto; display: flex; gap: 8px; align-items: stretch; }
+  #prompt { flex: 1; min-height: 64px; max-height: 40vh; resize: vertical; }
+  footer .buttons { display: flex; flex-direction: column; gap: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PolyLing MCP</h1>
+  <label>Anthropic API キー<input id="apiKey" type="password" autocomplete="off" spellcheck="false"></label>
+  <label>モデル<input id="model" list="models" value="claude-sonnet-5" spellcheck="false"></label>
+  <datalist id="models">
+    <option value="claude-haiku-4-5"></option>
+    <option value="claude-sonnet-5"></option>
+    <option value="claude-opus-5"></option>
+  </datalist>
+  <label>max_tokens<input id="maxTokens" type="number" min="1" value="4096"></label>
+  <button id="connect" class="ghost">MCP サーバに接続</button>
+  <button id="clear" class="ghost">会話をクリア</button>
+</header>
+<main>
+  <div id="status">未接続</div>
+  <div id="log"></div>
+</main>
+<footer>
+  <div class="row">
+    <textarea id="prompt" placeholder="メッセージ（Ctrl+Enter で送信）"></textarea>
+    <div class="buttons">
+      <button id="send">送信</button>
+      <button id="stop" class="ghost" disabled>中止</button>
+    </div>
+  </div>
+</footer>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// 設定
+// ---------------------------------------------------------------------------
+
+// このページは PolyLingMcpServer --http <port> が / で返す。MCP エンドポイントは同じオリジンの /mcp。
+// Program.McpEndpointPath と一致させる。
+const MCP_ENDPOINT = "/mcp";
+
+// MCP 仕様 2026-07-28。セッションと initialize は無く、要求ごとに _meta とヘッダでバージョンを伝える。
+const PROTOCOL_VERSION = "2026-07-28";
+const CLIENT_INFO = { name: "PolyLingWebClient", version: "1.0.0" };
+
+const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+
+// 1 回の送信で Claude とツールを往復する上限。暴走したときに API キーの利用額を食い潰さないための止め。
+const MAX_TOOL_ROUNDS = 30;
+
+// Anthropic のツール名の制約（define-tools: ^[a-zA-Z0-9_-]{1,128}$）。
+const ANTHROPIC_TOOL_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
+
+// ---------------------------------------------------------------------------
+// 状態
+// ---------------------------------------------------------------------------
+
+let mcpTools = [];          // tools/list の結果（x-mcp-header 検証を通ったもの）
+let anthropicTools = [];    // Anthropic に渡す tools
+let serverInstructions = ""; // server/discover の instructions（あれば system に入れる）
+let messages = [];          // Anthropic Messages API の会話履歴
+let rpcId = 0;
+let busy = false;
+let abortController = null;
+
+const $ = id => document.getElementById(id);
+
+// ---------------------------------------------------------------------------
+// MCP クライアント（Streamable HTTP, 2026-07-28）
+// ---------------------------------------------------------------------------
+
+/**
+ * ヘッダ値の符号化（Streamable HTTP「Value Encoding」）。
+ * 可視 ASCII・空白・タブだけで、前後に空白が無く、センチネル形でもなければそのまま。
+ * それ以外は UTF-8 の Base64 を =?base64?…?= で包む。
+ */
+function encodeHeaderValue(value) {
+  const plainSafe = /^[\x20-\x7E\t]*$/.test(value)
+    && !/^[ \t]|[ \t]$/.test(value)
+    && !(value.startsWith("=?base64?") && value.endsWith("?="));
+  if (plainSafe) return value;
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return "=?base64?" + btoa(binary) + "?=";
+}
+
+// RFC 9110 token（1*tchar）。
+const HEADER_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+// 値として JSON を持つキーワード。中に "x-mcp-header" というキーがあっても注釈ではない。
+const SCHEMA_DATA_KEYWORDS = new Set(["enum", "const", "default", "examples"]);
+
+/**
+ * inputSchema から x-mcp-header 注釈を集め、仕様の制約を検査する。
+ * 戻り値: { ok: true, headers: [{ path: [...], name }] } または { ok: false, reason }
+ */
+function collectMcpHeaders(inputSchema) {
+  const headers = [];
+  const problems = [];
+
+  const walk = (node, path, reachable) => {
+    if (Array.isArray(node)) { node.forEach(v => walk(v, null, false)); return; }
+    if (node === null || typeof node !== "object") return;
+
+    if (Object.prototype.hasOwnProperty.call(node, "x-mcp-header")) {
+      const name = node["x-mcp-header"];
+      if (!reachable || path === null || path.length === 0) {
+        problems.push("x-mcp-header が properties の連鎖以外の場所にある");
+      } else if (typeof name !== "string" || name.length === 0 || !HEADER_TOKEN.test(name)) {
+        problems.push(`x-mcp-header の値が不正: ${JSON.stringify(name)}`);
+      } else if (!["string", "integer", "boolean"].includes(node.type)) {
+        problems.push(`x-mcp-header ${name} の型が string/integer/boolean でない: ${JSON.stringify(node.type)}`);
+      } else {
+        headers.push({ path, name });
+      }
+    }
+
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "x-mcp-header" || SCHEMA_DATA_KEYWORDS.has(key)) continue;
+      if (key === "properties" && value && typeof value === "object" && !Array.isArray(value)) {
+        for (const [prop, child] of Object.entries(value)) {
+          walk(child, reachable && path !== null ? [...path, prop] : null, reachable && path !== null);
+        }
+      } else {
+        walk(value, null, false);
+      }
+    }
+  };
+
+  walk(inputSchema, [], true);
+
+  const seen = new Set();
+  for (const h of headers) {
+    const lower = h.name.toLowerCase();
+    if (seen.has(lower)) problems.push(`x-mcp-header ${h.name} が重複している`);
+    seen.add(lower);
+  }
+
+  return problems.length > 0 ? { ok: false, reason: problems.join("; ") } : { ok: true, headers };
+}
+
+/** SSE 応答を読み、要求 id に対する JSON-RPC 応答を返す。通知はコンソールに出すだけ。 */
+async function readSseResponse(response, expectedId) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let dataLines = [];
+
+  const dispatch = () => {
+    if (dataLines.length === 0) return null;
+    const data = dataLines.join("\n");
+    dataLines = [];
+    if (data.trim() === "") return null; // 空 data のイベント
+    const message = JSON.parse(data);
+    if (message.id === expectedId && ("result" in message || "error" in message)) return message;
+    console.log("MCP notification", message);
+    return null;
+  };
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let newline;
+    while ((newline = buffer.search(/\r\n|\r|\n/)) >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + (buffer.startsWith("\r\n", newline) ? 2 : 1));
+
+      if (line === "") {
+        const message = dispatch();
+        if (message) { reader.cancel().catch(() => {}); return message; }
+      } else if (line.startsWith(":")) {
+        // コメント（keep-alive）。無視する。
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).replace(/^ /, ""));
+      }
+      // event: / id: / retry: はこのクライアントでは使わない。
+    }
+  }
+  return dispatch(); // 最後のイベントが空行で終わっていない場合
+}
+
+/**
+ * JSON-RPC 要求を 1 回の POST で送る。
+ * extraHeaders は tools/call の Mcp-Param-* 用。
+ */
+async function mcpRequest(method, params = {}, extraHeaders = {}, signal = undefined) {
+  const id = ++rpcId;
+  const body = {
+    jsonrpc: "2.0",
+    id,
+    method,
+    params: {
+      ...params,
+      _meta: {
+        ...(params._meta || {}),
+        "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+        "io.modelcontextprotocol/clientInfo": CLIENT_INFO,
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
+    }
+  };
+
+  const headers = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+    "MCP-Protocol-Version": PROTOCOL_VERSION,
+    "Mcp-Method": method,
+    ...extraHeaders
+  };
+  if (method === "tools/call" || method === "prompts/get") headers["Mcp-Name"] = encodeHeaderValue(params.name);
+  if (method === "resources/read") headers["Mcp-Name"] = encodeHeaderValue(params.uri);
+
+  const response = await fetch(MCP_ENDPOINT, { method: "POST", headers, body: JSON.stringify(body), signal });
+  const contentType = response.headers.get("Content-Type") || "";
+
+  let message;
+  if (contentType.includes("text/event-stream")) {
+    message = await readSseResponse(response, id);
+  } else {
+    const text = await response.text();
+    try {
+      message = text ? JSON.parse(text) : null;
+    } catch {
+      throw new Error(`MCP ${method}: HTTP ${response.status} ${text.slice(0, 500)}`);
+    }
+  }
+
+  if (!message) throw new Error(`MCP ${method}: HTTP ${response.status}、応答本文が無い`);
+  if (message.error) {
+    const data = message.error.data !== undefined ? " " + JSON.stringify(message.error.data) : "";
+    throw new Error(`MCP ${method}: HTTP ${response.status} error ${message.error.code} ${message.error.message}${data}`);
+  }
+
+  const result = message.result;
+  const resultType = result.resultType ?? "complete"; // 旧版サーバは resultType を持たない
+  if (resultType !== "complete") throw new Error(`MCP ${method}: resultType "${resultType}" はこのクライアントでは扱わない`);
+  return result;
+}
+
+async function mcpConnect() {
+  const discover = await mcpRequest("server/discover");
+  if (!Array.isArray(discover.supportedVersions) || !discover.supportedVersions.includes(PROTOCOL_VERSION)) {
+    throw new Error(`サーバが ${PROTOCOL_VERSION} を持たない: ${JSON.stringify(discover.supportedVersions)}`);
+  }
+  serverInstructions = typeof discover.instructions === "string" ? discover.instructions : "";
+
+  const tools = [];
+  let cursor;
+  do {
+    const page = await mcpRequest("tools/list", cursor ? { cursor } : {});
+    tools.push(...(page.tools || []));
+    cursor = page.nextCursor;
+  } while (cursor);
+
+  mcpTools = [];
+  anthropicTools = [];
+  for (const tool of tools) {
+    const check = collectMcpHeaders(tool.inputSchema);
+    if (!check.ok) {
+      console.warn(`tool ${tool.name} を除外: ${check.reason}`);
+      addInfo(`ツール ${tool.name} を除外（x-mcp-header 不正: ${check.reason}）`);
+      continue;
+    }
+    if (!ANTHROPIC_TOOL_NAME.test(tool.name)) {
+      addInfo(`ツール ${tool.name} を除外（Anthropic のツール名の制約に合わない）`);
+      continue;
+    }
+    mcpTools.push({ ...tool, mcpHeaders: check.headers });
+    const def = { name: tool.name, input_schema: tool.inputSchema };
+    if (tool.description) def.description = tool.description;
+    anthropicTools.push(def);
+  }
+
+  const info = discover._meta?.["io.modelcontextprotocol/serverInfo"];
+  return { serverName: info ? `${info.name} ${info.version}` : "(serverInfo なし)", toolCount: mcpTools.length };
+}
+
+async function mcpCallTool(name, args, signal) {
+  const tool = mcpTools.find(t => t.name === name);
+  if (!tool) throw new Error(`MCP サーバに無いツール: ${name}`);
+
+  const extraHeaders = {};
+  for (const h of tool.mcpHeaders) {
+    let value = args;
+    for (const key of h.path) value = value != null && typeof value === "object" ? value[key] : undefined;
+    if (value === undefined || value === null) continue;
+    let text;
+    if (typeof value === "string") text = value;
+    else if (typeof value === "boolean") text = value ? "true" : "false";
+    else if (Number.isInteger(value)) text = String(value);
+    else continue; // 型が合わない値はヘッダにしない。サーバが本文と照合して判断する
+    extraHeaders["Mcp-Param-" + h.name] = encodeHeaderValue(text);
+  }
+
+  return mcpRequest("tools/call", { name, arguments: args }, extraHeaders, signal);
+}
+
+// ---------------------------------------------------------------------------
+// MCP の結果 → Anthropic の tool_result
+// ---------------------------------------------------------------------------
+
+function toToolResult(toolUseId, result) {
+  const blocks = [];
+  for (const c of result.content || []) {
+    switch (c.type) {
+      case "text":
+        if (c.text) blocks.push({ type: "text", text: c.text });
+        break;
+      case "image":
+        blocks.push({ type: "image", source: { type: "base64", media_type: c.mimeType, data: c.data } });
+        break;
+      case "resource":
+        if (typeof c.resource?.text === "string" && c.resource.text) {
+          blocks.push({ type: "text", text: c.resource.text });
+        } else {
+          blocks.push({ type: "text", text: `[resource ${c.resource?.uri ?? ""} ${c.resource?.mimeType ?? ""}（バイナリは渡していない）]` });
+        }
+        break;
+      default:
+        // audio / resource_link など。中身をそのまま文字列で渡す（audio の data は長いので省く）。
+        blocks.push({ type: "text", text: JSON.stringify({ ...c, data: c.data ? `(${c.data.length} chars omitted)` : undefined }) });
+    }
+  }
+  if (blocks.length === 0 && result.structuredContent !== undefined) {
+    blocks.push({ type: "text", text: JSON.stringify(result.structuredContent) });
+  }
+
+  const toolResult = { type: "tool_result", tool_use_id: toolUseId, content: blocks.length > 0 ? blocks : "(no content)" };
+  if (result.isError) toolResult.is_error = true;
+  return toolResult;
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic Messages API
+// ---------------------------------------------------------------------------
+
+async function callClaude(signal) {
+  const body = {
+    model: $("model").value.trim(),
+    max_tokens: Number($("maxTokens").value),
+    messages
+  };
+  if (anthropicTools.length > 0) body.tools = anthropicTools;
+  if (serverInstructions) body.system = serverInstructions;
+
+  const response = await fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": $("apiKey").value.trim(),
+      "anthropic-version": ANTHROPIC_VERSION,
+      // これが無いと Anthropic API は CORS ヘッダを返さず、ブラウザが応答を読めない。
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify(body),
+    signal
+  });
+
+  const json = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = json?.error ? `${json.error.type}: ${json.error.message}` : "(本文なし)";
+    throw new Error(`Anthropic API: HTTP ${response.status} ${detail}`);
+  }
+  return json;
+}
+
+async function runTurn(userText) {
+  const historyLength = messages.length;
+  abortController = new AbortController();
+  const signal = abortController.signal;
+  setBusy(true);
+
+  messages.push({ role: "user", content: userText });
+  addMessage("user", userText);
+
+  try {
+    for (let round = 0; ; round++) {
+      if (round >= MAX_TOOL_ROUNDS) {
+        throw new Error(`ツール往復が上限 ${MAX_TOOL_ROUNDS} 回に達したので止めた`);
+      }
+
+      const reply = await callClaude(signal);
+      const content = reply.content || [];
+
+      for (const block of content) {
+        if (block.type === "text" && block.text) addMessage("assistant", block.text);
+      }
+
+      const toolUses = content.filter(b => b.type === "tool_use");
+
+      if (reply.stop_reason !== "tool_use") {
+        // max_tokens で途切れた tool_use は実行しない。対応する tool_result が無いまま
+        // 履歴に残すと次の要求が API に拒否されるので、履歴からも外す。
+        let kept = content.filter(b => b.type !== "tool_use");
+        if (kept.length === 0) kept = [{ type: "text", text: `(stop_reason: ${reply.stop_reason})` }];
+        messages.push({ role: "assistant", content: kept });
+        if (reply.stop_reason !== "end_turn") addInfo(`stop_reason: ${reply.stop_reason}`);
+        break;
+      }
+
+      messages.push({ role: "assistant", content });
+
+      const results = [];
+      for (const use of toolUses) {
+        const view = addToolCall(use.name, use.input);
+        try {
+          const result = await mcpCallTool(use.name, use.input, signal);
+          results.push(toToolResult(use.id, result));
+          fillToolResult(view, result, null);
+        } catch (e) {
+          if (signal.aborted) throw e;
+          results.push({ type: "tool_result", tool_use_id: use.id, content: String(e.message || e), is_error: true });
+          fillToolResult(view, null, e);
+        }
+      }
+      messages.push({ role: "user", content: results });
+    }
+  } catch (e) {
+    // 途中で失敗した往復は履歴から外す。tool_use と tool_result の対応が崩れた履歴は
+    // 次の送信で API に拒否されるため。
+    messages.length = historyLength;
+    addError((signal.aborted ? "中止した" : String(e.message || e)) + "（この送信は会話履歴から外した）");
+  } finally {
+    abortController = null;
+    setBusy(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 画面
+// ---------------------------------------------------------------------------
+
+function addMessage(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  const r = document.createElement("div");
+  r.className = "role";
+  r.textContent = role === "user" ? "you" : "claude";
+  div.append(r, document.createTextNode(text));
+  $("log").append(div);
+  div.scrollIntoView({ block: "end" });
+}
+
+function addInfo(text) {
+  const div = document.createElement("div");
+  div.className = "msg info";
+  div.textContent = text;
+  $("log").append(div);
+}
+
+function addError(text) {
+  const div = document.createElement("div");
+  div.className = "msg error";
+  div.textContent = text;
+  $("log").append(div);
+  div.scrollIntoView({ block: "end" });
+}
+
+function addToolCall(name, input) {
+  const details = document.createElement("details");
+  details.className = "tool";
+  const summary = document.createElement("summary");
+  summary.textContent = `tool: ${name} … 実行中`;
+  const args = document.createElement("pre");
+  args.textContent = JSON.stringify(input, null, 2);
+  details.append(summary, args);
+  $("log").append(details);
+  details.scrollIntoView({ block: "end" });
+  return { details, summary, name };
+}
+
+function fillToolResult(view, result, error) {
+  const failed = error || result?.isError;
+  view.summary.textContent = `tool: ${view.name} … ${failed ? "エラー" : "完了"}`;
+  if (failed) view.details.classList.add("failed");
+
+  if (error) {
+    const pre = document.createElement("pre");
+    pre.textContent = String(error.message || error);
+    view.details.append(pre);
+    return;
+  }
+  for (const c of result.content || []) {
+    if (c.type === "image") {
+      const img = document.createElement("img");
+      img.src = `data:${c.mimeType};base64,${c.data}`;
+      view.details.append(img);
+    } else {
+      const pre = document.createElement("pre");
+      pre.textContent = c.type === "text" ? c.text : JSON.stringify(c, null, 2);
+      view.details.append(pre);
+    }
+  }
+}
+
+function setBusy(value) {
+  busy = value;
+  $("send").disabled = value;
+  $("connect").disabled = value;
+  $("clear").disabled = value;
+  $("stop").disabled = !value;
+}
+
+$("connect").addEventListener("click", async () => {
+  $("status").textContent = "接続中…";
+  $("connect").disabled = true;
+  try {
+    const { serverName, toolCount } = await mcpConnect();
+    $("status").textContent = `接続済み: ${serverName} / ツール ${toolCount} 個 / MCP ${PROTOCOL_VERSION}`;
+  } catch (e) {
+    mcpTools = []; anthropicTools = []; serverInstructions = "";
+    $("status").textContent = "未接続";
+    addError("MCP 接続失敗: " + (e.message || e));
+  } finally {
+    $("connect").disabled = busy;
+  }
+});
+
+$("clear").addEventListener("click", () => {
+  messages = [];
+  $("log").replaceChildren();
+});
+
+$("stop").addEventListener("click", () => abortController?.abort());
+
+function send() {
+  if (busy) return;
+  const text = $("prompt").value.trim();
+  if (!text) return;
+  if (!$("apiKey").value.trim()) { addError("API キーが空"); return; }
+  if (anthropicTools.length === 0) addInfo("MCP 未接続（ツール無し）で送信する");
+  $("prompt").value = "";
+  runTurn(text);
+}
+
+$("send").addEventListener("click", send);
+$("prompt").addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); }
+});
+</script>
+</body>
+</html>

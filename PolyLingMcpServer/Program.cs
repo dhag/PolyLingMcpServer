@@ -1,0 +1,329 @@
+using System.Net;
+using System.Reflection;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using System.Text;
+
+namespace PolyLingMcpServer;
+
+internal static class Program
+{
+    // 起動方法は 2 つ。
+    //   既定      : Claude Desktop が子プロセスとして起動し、stdin/stdout で話す（stdio）。
+    //   --http <port> : 127.0.0.1:<port> で Streamable HTTP を待ち受け、
+    //                   同じポートの / でブラウザ用クライアント（WebClient/index.html）を返す。
+    // Unknown arguments, including a legacy --stdio, are ignored by the option parsers below.
+    static int Main(string[] args) => Run(args).GetAwaiter().GetResult();
+
+    /// <summary>ブラウザ用クライアントの埋め込みリソース名。csproj の LogicalName と一致させる。</summary>
+    private const string WebClientResourceName = "PolyLingMcpServer.WebClient.index.html";
+
+    /// <summary>HTTP モードの MCP エンドポイント。WebClient/index.html の MCP_ENDPOINT と一致させる。</summary>
+    private const string McpEndpointPath = "/mcp";
+
+    private static async Task<int> Run(string[] args)
+    {    // Windows では、リダイレクトされた stderr の既定エンコーディングがシステムの
+         // コードページになる。stdout は MCP トランスポートが生ストリームを直接扱うので
+         // 触らず、stderr だけを UTF-8 に差し替える。
+        Console.SetError(new StreamWriter(Console.OpenStandardError(), new UTF8Encoding(false))
+        {
+            AutoFlush = true
+        });
+
+        // Shift_JIS などのコードページ系エンコーディングを使えるようにする。
+        // .NET 8 は既定ではこれらを持たず、登録しないと
+        // Encoding.GetEncoding("shift_jis") が ArgumentException になる。
+        // read_file / read_lines / search_text の encoding 引数が使う
+        // （MQO は Shift_JIS で書かれている）。
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
+        var projectRoot = GetOption(args, "--project");
+        var editableFolders = GetEditableFolders(args);
+
+        // Editor.log の場所。Unity を -logFile 付きで起動しているときだけ指定する。
+        var unityLogPath = GetOption(args, "--unity-log");
+        if (string.IsNullOrWhiteSpace(unityLogPath))
+            unityLogPath = DefaultUnityLogPath();
+
+        if (string.IsNullOrWhiteSpace(projectRoot) || !Directory.Exists(projectRoot))
+        {
+            // stdout is the JSON-RPC channel. Diagnostics always go to stderr.
+            await Console.Error.WriteLineAsync(
+                "usage: PolyLingMcpServer.exe --project <unity-project-folder> "
+                + "[--editable <folder>] ... [--root <name>=<absolute folder>] ... [--unity-log <Editor.log path>] [--http <port>]\n"
+                + "  --editable may be repeated, or given once as a ';'-separated list.\n"
+                + "             Each item is a project-relative folder, or @<name>[/sub] for a --root folder.\n"
+                + "  --root     adds a readable folder outside the project, addressed as @<name>/path.\n"
+                + "             May be repeated. Example: --root settings=C:\\Users\\me\\AppData\\LocalLow\\Vendor\n"
+                + "  --unity-log defaults to %LOCALAPPDATA%\\Unity\\Editor\\Editor.log.\n"
+                + "  --http     serves Streamable HTTP on 127.0.0.1:<port>" + McpEndpointPath + " and the browser client on /.\n"
+                + "             Without it the server talks over stdin/stdout.");
+            return 2;
+        }
+
+        if (!TryParseRoots(args, out var extraRoots, out var rootError))
+        {
+            await Console.Error.WriteLineAsync("ERROR: " + rootError);
+            return 2;
+        }
+
+        // --http は指定されたときだけ検証する。数値でない・範囲外を黙って stdio に
+        // 落とすと、「ブラウザから繋がらない」の原因が起動引数だと分からなくなる。
+        int? httpPort = null;
+        if (HasOption(args, "--http"))
+        {
+            var portText = GetOption(args, "--http");
+            if (!int.TryParse(portText, out var port) || port < 1 || port > 65535)
+            {
+                await Console.Error.WriteLineAsync($"ERROR: --http must be a port number 1-65535: {portText ?? "(missing)"}");
+                return 2;
+            }
+            httpPort = port;
+        }
+
+        var state = new ServerState
+        {
+            ProjectRoot = Path.GetFullPath(projectRoot),
+            ExtraRoots = extraRoots,
+            EditableFolders = editableFolders,
+            UnityLogPath = Path.GetFullPath(unityLogPath)
+        };
+
+        // 打ち間違いをここで止める。起動してから「書けない」と言われるより、
+        // 起動時に名前が引けないと分かる方が早い。
+        foreach (var folder in state.EditableFolders)
+        {
+            if (state.TryResolveEditableFolder(folder, out _)) continue;
+
+            await Console.Error.WriteLineAsync(
+                $"ERROR: --editable {folder} names no known root. Known roots: {state.RootsDisplay}");
+            return 2;
+        }
+
+        // 起動時に一度だけ出す。どこまで届くのかを stderr のログで確かめられるようにする。
+        await Console.Error.WriteLineAsync($"roots: {state.RootsDisplay}");
+        await Console.Error.WriteLineAsync($"editable: {state.EditableFoldersDisplay}");
+        await Console.Error.WriteLineAsync($"unity log: {state.UnityLogPath}");
+
+
+        // 接続診断。stdout は JSON-RPC の経路なので stderr へ出す。
+        // TcpDuplexServer は Editor 側でしか使わないため、ここでは購読しない
+        // （csproj にリンクしていないので参照できない）。
+        HagLib.NET.Duplex.PipeDuplexChannel.DiagnosticLog = line => Console.Error.WriteLine(line);
+        HagLib.NET.Duplex.PipeDuplexServer.DiagnosticLog  = line => Console.Error.WriteLine(line);
+
+        if (httpPort is int httpPortValue)
+            await RunHttp(state, httpPortValue);
+        else
+            await RunStdio(state);
+
+        return 0;
+    }
+
+    private static async Task RunStdio(ServerState state)
+    {
+        var builder = Host.CreateApplicationBuilder();
+
+        // The default console logger writes to stdout, which would corrupt the
+        // JSON-RPC stream. Send every log record to stderr instead.
+        builder.Logging.ClearProviders();
+        builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+
+        builder.Services.AddSingleton(state);
+        builder.Services.AddSingleton(UiDispatcher.ForStandardError());
+        builder.Services
+            .AddMcpServer()
+            .WithStdioServerTransport()
+            .WithToolsFromAssembly(typeof(UnityProjectTools).Assembly);
+
+        await builder.Build().RunAsync();
+    }
+
+    /// <summary>
+    /// Streamable HTTP で待ち受ける。ブラウザ用クライアントも同じオリジンから返すので CORS は設定しない。
+    ///
+    /// 【待ち受け先】 127.0.0.1 のみ。MCP 仕様（2026-07-28, Streamable HTTP「Security &amp; Endpoint」）が
+    ///   ローカル実行時は localhost だけに bind することを求めている（SHOULD）。
+    /// 【Origin 検証】 同節で MUST。Origin ヘッダがあり不正なら 403。ModelContextProtocol.AspNetCore 2.2.0 は
+    ///   この検証を持たないので、ここで行う。許すのはこのサーバ自身のオリジンだけ。
+    ///   Origin ヘッダの無い要求（curl など、ブラウザ以外）は仕様どおり通す。
+    /// 【セッション】 2.2.0 の既定は Stateless（2026-07-28 でプロトコル上のセッションが廃止された）。
+    ///   道具は ServerState / UiDispatcher 以外に状態を持たず、EditorControlClient も呼び出しごとに
+    ///   接続するので、セッションを必要としない。
+    /// </summary>
+    private static async Task RunHttp(ServerState state, int port)
+    {
+        var builder = WebApplication.CreateBuilder();
+
+        // stdio と揃えて、ログは stderr に出す。
+        builder.Logging.ClearProviders();
+        builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+
+        builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
+
+        builder.Services.AddSingleton(state);
+        builder.Services.AddSingleton(UiDispatcher.ForStandardError());
+        builder.Services
+            .AddMcpServer()
+            .WithHttpTransport()
+            .WithToolsFromAssembly(typeof(UnityProjectTools).Assembly);
+
+        var app = builder.Build();
+
+        // localhost と 127.0.0.1 はブラウザにとって別オリジンなので両方を許す。
+        var allowedOrigins = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            $"http://127.0.0.1:{port}",
+            $"http://localhost:{port}"
+        };
+
+        app.Use(async (context, next) =>
+        {
+            var origin = context.Request.Headers.Origin.ToString();
+            if (origin.Length > 0 && !allowedOrigins.Contains(origin))
+            {
+                Console.Error.WriteLine($"403 origin rejected: {origin} {context.Request.Method} {context.Request.Path}");
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
+            await next(context);
+        });
+
+        app.MapGet("/", async context =>
+        {
+            await using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(WebClientResourceName);
+            if (stream is null)
+            {
+                // csproj の EmbeddedResource が外れていると起きる。黙って 404 にしない。
+                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                await context.Response.WriteAsync($"ERROR: embedded resource {WebClientResourceName} is missing.");
+                return;
+            }
+            context.Response.ContentType = "text/html; charset=utf-8";
+            await stream.CopyToAsync(context.Response.Body);
+        });
+
+        app.MapMcp(McpEndpointPath);
+
+        await Console.Error.WriteLineAsync($"http: http://127.0.0.1:{port}/  (MCP endpoint {McpEndpointPath})");
+
+        await app.RunAsync();
+    }
+
+    private static bool HasOption(string[] args, string name) =>
+        Array.Exists(args, a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Unity Editor のログの既定の場所。Windows では
+    /// &lt;LOCALAPPDATA&gt;\Unity\Editor\Editor.log（Unity マニュアル「Log files」）。
+    /// LocalApplicationData は CSIDL_LOCAL_APPDATA に当たる。
+    /// </summary>
+    private static string DefaultUnityLogPath() =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Unity", "Editor", "Editor.log");
+
+    private static string? GetOption(string[] args, string name)
+    {
+        var index = Array.FindIndex(args, a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
+        return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
+    }
+
+    /// <summary>
+    /// Collects every --editable value. The flag may be repeated, and a single
+    /// value may itself be a ';' or ',' separated list, because some MCP client
+    /// configurations are easier to write with one argument than with several.
+    /// </summary>
+    private static string[] GetEditableFolders(string[] args)
+    {
+        var folders = new List<string>();
+
+        for (var i = 0; i + 1 < args.Length; i++)
+        {
+            if (!string.Equals(args[i], "--editable", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            folders.AddRange(SplitFolderList(args[i + 1]));
+        }
+
+        if (folders.Count == 0)
+            folders.Add("Assets");
+
+        return folders.ToArray();
+    }
+
+    // Typed as char[] rather than written inline as a collection expression:
+    // an inline [';', ','] leaves string.Split ambiguous between its char[] and
+    // string overloads (CS0121).
+    private static readonly char[] FolderSeparators = [';', ','];
+
+    internal static IEnumerable<string> SplitFolderList(string value) =>
+        value.Split(FolderSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>ルート名に使えない文字。@ は接頭辞、区切りは相対パスとの境目。</summary>
+    private static readonly char[] RootNameRejected = ['@', '/', '\\'];
+
+    /// <summary>
+    /// --root &lt;名前&gt;=&lt;絶対パス&gt; を集める。繰り返し可。
+    ///
+    /// 形の違い・名前の重なり・実在しないフォルダは起動を止める。黙って捨てると、
+    /// 「@settings が引けない」が実行時の「ファイルが無い」に化けて原因が分からなくなる。
+    /// </summary>
+    internal static bool TryParseRoots(string[] args, out List<NamedRoot> roots, out string error)
+    {
+        roots = [];
+        error = string.Empty;
+
+        for (var i = 0; i + 1 < args.Length; i++)
+        {
+            if (!string.Equals(args[i], "--root", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var spec = args[i + 1];
+            int eq = spec.IndexOf('=');
+
+            if (eq <= 0 || eq == spec.Length - 1)
+            {
+                error = $"--root must be written name=path: {spec}";
+                return false;
+            }
+
+            var name = spec[..eq].Trim();
+            var path = spec[(eq + 1)..].Trim().Trim('"');
+
+            if (name.IndexOfAny(RootNameRejected) >= 0)
+            {
+                error = $"--root name must not contain '@', '/' or '\\': {name}";
+                return false;
+            }
+
+            if (!Path.IsPathRooted(path))
+            {
+                error = $"--root path must be absolute: {path}";
+                return false;
+            }
+
+            var full = Path.GetFullPath(path);
+
+            if (!Directory.Exists(full))
+            {
+                error = $"--root folder not found: {full}";
+                return false;
+            }
+
+            if (roots.Any(root => string.Equals(root.Name, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                error = $"--root name is used twice: {name}";
+                return false;
+            }
+
+            roots.Add(new NamedRoot(name, full));
+        }
+
+        return true;
+    }
+}
