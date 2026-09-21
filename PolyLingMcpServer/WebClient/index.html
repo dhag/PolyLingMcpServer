@@ -48,6 +48,11 @@
   footer .row { max-width: 980px; margin: 0 auto; display: flex; gap: 8px; align-items: stretch; }
   #prompt { flex: 1; min-height: 64px; max-height: 40vh; resize: vertical; }
   footer .buttons { display: flex; flex-direction: column; gap: 6px; }
+  #metricsBar { padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+                display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: end; font-size: 12px; }
+  #metricsBar input.price { width: 5.5em; }
+  #taskLabel { width: 12em; }
+  #taskStatus { font: 12px var(--mono); color: var(--sub); align-self: center; }
 </style>
 </head>
 <body>
@@ -64,6 +69,22 @@
   <button id="connect" class="ghost">MCP サーバに接続</button>
   <button id="clear" class="ghost">会話をクリア</button>
 </header>
+<div id="metricsBar">
+  <label>課題名<input id="taskLabel" spellcheck="false" placeholder="例: T1-コマンド実行"></label>
+  <button id="taskStart" class="ghost" title="会話をクリアしてから計測を始める">課題開始</button>
+  <button id="taskOk" class="ghost" disabled>成功で終了</button>
+  <button id="taskNg" class="ghost" disabled>失敗で終了</button>
+  <label>入力 $/MTok<input id="priceIn" class="price" type="number" min="0" step="any"></label>
+  <label>出力 $/MTok<input id="priceOut" class="price" type="number" min="0" step="any"></label>
+  <label>cache 書込 $/MTok<input id="priceCacheW" class="price" type="number" min="0" step="any"></label>
+  <label>cache 読込 $/MTok<input id="priceCacheR" class="price" type="number" min="0" step="any"></label>
+  <label>利用シーン<select id="scene"><option value="">（指定なし）</option></select></label>
+  <button id="sceneReload" class="ghost" title="PolyLing の利用シーン一覧を取り直す（polyling_scenes）">利用シーン一覧</button>
+  <label title="Tool 定義・system・履歴の末尾に cache_control を付ける">キャッシュ<input id="useCache" type="checkbox"></label>
+  <label title="直近 K 往復より古い tool_result の本文を短い文に置き換えて送る。空欄 = しない">履歴圧縮 K<input id="compactK" class="price" type="number" min="0" step="1" placeholder="しない"></label>
+  <button id="metricsCsv" class="ghost">計測 CSV を保存</button>
+  <span id="taskStatus">課題なし</span>
+</div>
 <main>
   <div id="status">未接続</div>
   <div id="log"></div>
@@ -113,6 +134,156 @@ let messages = [];          // Anthropic Messages API の会話履歴
 let rpcId = 0;
 let busy = false;
 let abortController = null;
+let serverName = "";        // 接続先の serverInfo（name version）。version に profile= が入る
+
+// ---------------------------------------------------------------------------
+// 計測
+// ---------------------------------------------------------------------------
+//
+// Claude API の 1 往復（round）ごとに usage を 1 行記録する。課題の開始・終了も 1 行ずつ。
+// taskId は MCP 要求の _meta へ入れてサーバへ渡し、サーバ側の計測ログ（--metrics）と突き合わせる。
+// 料金単価は画面で入力する（コードに固定しない）。空欄なら費用は空欄のまま。
+
+// サーバの MetricsLog.TaskIdMetaKey と一致させる。
+const METRICS_TASK_META_KEY = "polyling/taskId";
+
+// サーバの MetricsLog.SceneMetaKey と一致させる。選んだ利用シーンを要求ごとに明示する
+// （サーバは会話ごとの状態を持たない）。profile=optimized 以外のサーバは無視する。
+const SCENE_META_KEY = "polyling/scene";
+let currentScene = "";
+
+let currentTask = null;     // { id, label, startedAt, rounds, input, output, cacheW, cacheR, toolUses, toolResultBytes }
+const metricRows = [];      // CSV の行（オブジェクト）
+
+const utf8Bytes = text => new TextEncoder().encode(text).length;
+
+function priceOf(id) {
+  const v = Number($(id).value);
+  return $(id).value.trim() !== "" && Number.isFinite(v) ? v : null;
+}
+
+/** 料金単価が 4 つとも入っていれば USD、そうでなければ null。 */
+function costUsd(input, output, cacheW, cacheR) {
+  const p = [priceOf("priceIn"), priceOf("priceOut"), priceOf("priceCacheW"), priceOf("priceCacheR")];
+  if (p.some(x => x === null)) return null;
+  return (input * p[0] + output * p[1] + cacheW * p[2] + cacheR * p[3]) / 1e6;
+}
+
+function showTaskStatus() {
+  if (!currentTask) { $("taskStatus").textContent = "課題なし"; return; }
+  const t = currentTask;
+  const cost = costUsd(t.input, t.output, t.cacheW, t.cacheR);
+  $("taskStatus").textContent =
+    `課題 ${t.label}: rounds=${t.rounds} in=${t.input} out=${t.output} cacheW=${t.cacheW} cacheR=${t.cacheR} ` +
+    `tools=${t.toolUses} resultBytes=${t.toolResultBytes}` + (cost === null ? "" : ` ≈ $${cost.toFixed(4)}`);
+}
+
+/** 応答を受け取った時点で 1 行記録する（中止しても費用は掛かっているため）。行を返す。 */
+function recordRound(reply, toolUses) {
+  const toolResultBytes = 0;
+  const u = reply.usage || {};
+  const row = {
+    kind: "round",
+    ts: new Date().toISOString(),
+    taskId: currentTask?.id ?? "",
+    label: currentTask?.label ?? "",
+    server: serverName,
+    scene: currentScene,
+    model: reply.model ?? $("model").value.trim(),
+    round: currentTask ? currentTask.rounds + 1 : "",
+    inputTokens: u.input_tokens ?? 0,
+    outputTokens: u.output_tokens ?? 0,
+    cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
+    cacheReadTokens: u.cache_read_input_tokens ?? 0,
+    stopReason: reply.stop_reason ?? "",
+    toolUses,
+    toolResultBytes,
+    toolsDefBytes: anthropicTools.length > 0 ? utf8Bytes(JSON.stringify(anthropicTools)) : 0,
+    systemBytes: serverInstructions ? utf8Bytes(serverInstructions) : 0,
+    requestBytes: lastRequestBytes,
+    cache: $("useCache").checked ? "on" : "off",
+    compactK: compactKeep() ?? "",
+    costUsd: "",
+    outcome: ""
+  };
+  const cost = costUsd(row.inputTokens, row.outputTokens, row.cacheWriteTokens, row.cacheReadTokens);
+  row.costUsd = cost === null ? "" : cost.toFixed(6);
+  metricRows.push(row);
+
+  if (currentTask) {
+    const t = currentTask;
+    t.rounds++;
+    t.input += row.inputTokens; t.output += row.outputTokens;
+    t.cacheW += row.cacheWriteTokens; t.cacheR += row.cacheReadTokens;
+    t.toolUses += toolUses;
+    showTaskStatus();
+  }
+  return row;
+}
+
+/** 道具の結果を送る分のバイト数を、その往復の行と課題の合計へ足す。 */
+function addToolResultBytes(row, bytes) {
+  row.toolResultBytes += bytes;
+  if (currentTask && row.taskId === currentTask.id) {
+    currentTask.toolResultBytes += bytes;
+    showTaskStatus();
+  }
+}
+
+function startTask() {
+  if (busy) return;
+  const label = $("taskLabel").value.trim() || "task";
+  const startedAt = new Date();
+  const id = `${label}-${startedAt.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
+  // 課題は新しい会話から始める（前の課題の履歴を入力に含めないため）。
+  messages = [];
+  $("log").replaceChildren();
+  currentTask = { id, label, startedAt, rounds: 0, input: 0, output: 0, cacheW: 0, cacheR: 0, toolUses: 0, toolResultBytes: 0 };
+  metricRows.push({ kind: "task_start", ts: startedAt.toISOString(), taskId: id, label, server: serverName, scene: currentScene,
+    model: $("model").value.trim(), cache: $("useCache").checked ? "on" : "off", compactK: compactKeep() ?? "" });
+  addInfo(`課題開始: ${id}（${serverName || "未接続"}）`);
+  $("taskOk").disabled = false; $("taskNg").disabled = false;
+  showTaskStatus();
+}
+
+function endTask(outcome) {
+  if (!currentTask || busy) return;
+  const t = currentTask;
+  const cost = costUsd(t.input, t.output, t.cacheW, t.cacheR);
+  metricRows.push({
+    kind: "task_end", ts: new Date().toISOString(), taskId: t.id, label: t.label, server: serverName, scene: currentScene,
+    model: $("model").value.trim(), round: t.rounds,
+    inputTokens: t.input, outputTokens: t.output, cacheWriteTokens: t.cacheW, cacheReadTokens: t.cacheR,
+    toolUses: t.toolUses, toolResultBytes: t.toolResultBytes,
+    wallMs: Date.now() - t.startedAt.getTime(),
+    costUsd: cost === null ? "" : cost.toFixed(6), outcome
+  });
+  addInfo(`課題終了（${outcome}）: ${$("taskStatus").textContent}`);
+  currentTask = null;
+  $("taskOk").disabled = true; $("taskNg").disabled = true;
+  showTaskStatus();
+}
+
+const CSV_COLUMNS = ["kind", "ts", "taskId", "label", "server", "scene", "model", "round",
+  "inputTokens", "outputTokens", "cacheWriteTokens", "cacheReadTokens", "stopReason",
+  "toolUses", "toolResultBytes", "toolsDefBytes", "systemBytes", "requestBytes", "cache", "compactK",
+  "wallMs", "costUsd", "outcome"];
+
+function saveCsv() {
+  const esc = v => {
+    const text = v === undefined || v === null ? "" : String(v);
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const lines = [CSV_COLUMNS.join(",")];
+  for (const row of metricRows) lines.push(CSV_COLUMNS.map(c => esc(row[c])).join(","));
+  // Excel が UTF-8 と判定できるよう BOM を付ける。
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `polyling-metrics-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 
 const $ = id => document.getElementById(id);
 
@@ -246,6 +417,8 @@ async function mcpRequest(method, params = {}, extraHeaders = {}, signal = undef
     params: {
       ...params,
       _meta: {
+        ...(currentTask ? { [METRICS_TASK_META_KEY]: currentTask.id } : {}),
+        ...(currentScene ? { [SCENE_META_KEY]: currentScene } : {}),
         ...(params._meta || {}),
         "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
         "io.modelcontextprotocol/clientInfo": CLIENT_INFO,
@@ -298,6 +471,19 @@ async function mcpConnect() {
   }
   serverInstructions = typeof discover.instructions === "string" ? discover.instructions : "";
 
+  const info = discover._meta?.["io.modelcontextprotocol/serverInfo"];
+  serverName = info ? `${info.name} ${info.version}` : "(serverInfo なし)";
+
+  await loadTools();
+  await loadScenes();
+  return { serverName, toolCount: mcpTools.length };
+}
+
+/**
+ * tools/list を取り直して Anthropic に渡す定義を作り直す。
+ * 利用シーンを変えたときもここを通す（サーバが利用シーンの道具に絞って返す）。
+ */
+async function loadTools() {
   const tools = [];
   let cursor;
   do {
@@ -324,9 +510,56 @@ async function mcpConnect() {
     if (tool.description) def.description = tool.description;
     anthropicTools.push(def);
   }
+}
 
-  const info = discover._meta?.["io.modelcontextprotocol/serverInfo"];
-  return { serverName: info ? `${info.name} ${info.version}` : "(serverInfo なし)", toolCount: mcpTools.length };
+/**
+ * 利用シーンの一覧を polyling_scenes で取り、選択欄を作り直す。
+ * サーバに polyling_scenes が無い（profile=optimized 以外）ときは欄を空にする。
+ * この呼び出しは利用者の操作なので課題の計測に数えない（taskId を空で送る）。
+ */
+async function loadScenes() {
+  const select = $("scene");
+  const keep = currentScene;
+  select.replaceChildren(new Option("（指定なし）", ""));
+
+  if (!mcpTools.some(t => t.name === "polyling_scenes")) {
+    currentScene = "";
+    select.disabled = true;
+    $("sceneReload").disabled = true;
+    return;
+  }
+  select.disabled = false;
+  $("sceneReload").disabled = false;
+
+  const result = await mcpRequest("tools/call",
+    { name: "polyling_scenes", arguments: {}, _meta: { [METRICS_TASK_META_KEY]: "" } });
+  const text = (result.content || []).find(c => c.type === "text")?.text ?? "";
+  if (text.startsWith("ERROR:")) { addInfo("利用シーン一覧を取れなかった: " + text); return; }
+
+  let scenes = [];
+  try { scenes = JSON.parse(text).scenes || []; } catch { addInfo("利用シーン一覧の形が読めない"); return; }
+  for (const sc of scenes) {
+    const o = new Option(sc.name, sc.name);
+    if (sc.description) o.title = sc.description;
+    select.append(o);
+  }
+  select.value = scenes.some(sc => sc.name === keep) ? keep : "";
+  currentScene = select.value;
+}
+
+async function changeScene(name) {
+  const previous = currentScene;
+  currentScene = name;
+  try {
+    await loadTools();
+    addInfo(`利用シーン: ${name || "（指定なし）"} / ツール ${mcpTools.length} 個`);
+  } catch (e) {
+    addError("利用シーンを切り替えられなかった: " + (e.message || e));
+    currentScene = previous;
+    $("scene").value = previous;
+    try { await loadTools(); } catch { /* 接続自体が切れている。接続し直す */ }
+  }
+  $("status").textContent = `接続済み: ${serverName} / ツール ${mcpTools.length} 個 / MCP ${PROTOCOL_VERSION}`;
 }
 
 async function mcpCallTool(name, args, signal) {
@@ -388,14 +621,87 @@ function toToolResult(toolUseId, result) {
 // Anthropic Messages API
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 送る量を減らす 2 つの切り替え（計測 CSV の cache / compactK 列に残す）
+// ---------------------------------------------------------------------------
+
+/** 履歴圧縮の K。空欄・不正なら null（圧縮しない）。 */
+function compactKeep() {
+  const text = $("compactK").value.trim();
+  if (text === "") return null;
+  const k = Number(text);
+  return Number.isInteger(k) && k >= 0 ? k : null;
+}
+
+/**
+ * 直近 keep 往復より古い tool_result の本文を「何の結果を何バイト省いたか」の短い文に置き換えた写しを返す。
+ * tool_use と tool_result の対応（tool_use_id）と is_error は残す。崩すと API に拒否される。
+ * 画面と messages（元の履歴）は変えない。送る写しだけを縮める。
+ */
+function compactMessages(src, keep) {
+  const withResults = [];
+  src.forEach((m, i) => {
+    if (m.role === "user" && Array.isArray(m.content) && m.content.some(b => b.type === "tool_result")) withResults.push(i);
+  });
+  const cut = new Set(withResults.slice(0, Math.max(0, withResults.length - keep)));
+  if (cut.size === 0) return src;
+
+  const names = new Map();
+  for (const m of src) {
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    for (const b of m.content) if (b.type === "tool_use") names.set(b.id, b.name);
+  }
+
+  return src.map((m, i) => !cut.has(i) ? m : {
+    role: m.role,
+    content: m.content.map(b => b.type !== "tool_result" ? b : {
+      type: "tool_result",
+      tool_use_id: b.tool_use_id,
+      ...(b.is_error ? { is_error: true } : {}),
+      content: `[省略: ${names.get(b.tool_use_id) ?? "tool"} の結果 ${utf8Bytes(JSON.stringify(b.content))} バイト]`
+    })
+  });
+}
+
+/**
+ * プロンプトキャッシュの区切りを 3 か所に付ける（上限は 4）。
+ *   Tool 定義の最後 / system / 履歴の最後のブロック
+ * 元の配列は書き換えず、body に写しを入れる。
+ */
+function applyCache(body) {
+  const mark = { type: "ephemeral" };
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    body.tools = body.tools.map((t, i) => i === body.tools.length - 1 ? { ...t, cache_control: mark } : t);
+  }
+  if (typeof body.system === "string" && body.system) {
+    body.system = [{ type: "text", text: body.system, cache_control: mark }];
+  }
+  const last = body.messages.length - 1;
+  if (last >= 0) {
+    const m = body.messages[last];
+    const content = typeof m.content === "string"
+      ? [{ type: "text", text: m.content }]
+      : m.content.slice();
+    if (content.length > 0) content[content.length - 1] = { ...content[content.length - 1], cache_control: mark };
+    body.messages = body.messages.slice(0, last).concat([{ role: m.role, content }]);
+  }
+}
+
+let lastRequestBytes = 0;   // 直前に Claude API へ送った本文のバイト数（計測用）
+
 async function callClaude(signal) {
+  const keep = compactKeep();
   const body = {
     model: $("model").value.trim(),
     max_tokens: Number($("maxTokens").value),
-    messages
+    messages: keep === null ? messages : compactMessages(messages, keep)
   };
   if (anthropicTools.length > 0) body.tools = anthropicTools;
   if (serverInstructions) body.system = serverInstructions;
+  if ($("useCache").checked) applyCache(body);
+
+  const payload = JSON.stringify(body);
+  lastRequestBytes = utf8Bytes(payload);
 
   const response = await fetch(ANTHROPIC_URL, {
     method: "POST",
@@ -406,7 +712,7 @@ async function callClaude(signal) {
       // これが無いと Anthropic API は CORS ヘッダを返さず、ブラウザが応答を読めない。
       "anthropic-dangerous-direct-browser-access": "true"
     },
-    body: JSON.stringify(body),
+    body: payload,
     signal
   });
 
@@ -435,6 +741,8 @@ async function runTurn(userText) {
 
       const reply = await callClaude(signal);
       const content = reply.content || [];
+      // max_tokens で途切れた tool_use は実行しないので数えない。
+      const roundRow = recordRound(reply, reply.stop_reason === "tool_use" ? content.filter(b => b.type === "tool_use").length : 0);
 
       for (const block of content) {
         if (block.type === "text" && block.text) addMessage("assistant", block.text);
@@ -468,6 +776,7 @@ async function runTurn(userText) {
         }
       }
       messages.push({ role: "user", content: results });
+      addToolResultBytes(roundRow, utf8Bytes(JSON.stringify(results)));
     }
   } catch (e) {
     // 途中で失敗した往復は履歴から外す。tool_use と tool_result の対応が崩れた履歴は
@@ -553,6 +862,11 @@ function setBusy(value) {
   $("connect").disabled = value;
   $("clear").disabled = value;
   $("stop").disabled = !value;
+  $("taskStart").disabled = value;
+  $("scene").disabled = value || !mcpTools.some(t => t.name === "polyling_scenes");
+  $("sceneReload").disabled = $("scene").disabled;
+  $("taskOk").disabled = value || !currentTask;
+  $("taskNg").disabled = value || !currentTask;
 }
 
 $("connect").addEventListener("click", async () => {
@@ -562,7 +876,7 @@ $("connect").addEventListener("click", async () => {
     const { serverName, toolCount } = await mcpConnect();
     $("status").textContent = `接続済み: ${serverName} / ツール ${toolCount} 個 / MCP ${PROTOCOL_VERSION}`;
   } catch (e) {
-    mcpTools = []; anthropicTools = []; serverInstructions = "";
+    mcpTools = []; anthropicTools = []; serverInstructions = ""; serverName = "";
     $("status").textContent = "未接続";
     addError("MCP 接続失敗: " + (e.message || e));
   } finally {
@@ -576,6 +890,15 @@ $("clear").addEventListener("click", () => {
 });
 
 $("stop").addEventListener("click", () => abortController?.abort());
+
+$("taskStart").addEventListener("click", startTask);
+$("taskOk").addEventListener("click", () => endTask("success"));
+$("taskNg").addEventListener("click", () => endTask("failure"));
+$("metricsCsv").addEventListener("click", saveCsv);
+$("scene").addEventListener("change", e => { if (!busy) changeScene(e.target.value); });
+$("sceneReload").addEventListener("click", async () => {
+  try { await loadScenes(); await loadTools(); } catch (e) { addError("利用シーン一覧: " + (e.message || e)); }
+});
 
 function send() {
   if (busy) return;

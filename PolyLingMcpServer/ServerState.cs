@@ -50,6 +50,27 @@ public sealed class ServerState
 
     public CompileResult? LastCompileResult { get; private set; }
 
+    /// <summary>比較用の条件。--profile で決まり、起動中は変わらない。</summary>
+    public ServerProfile Profile { get; set; } = ServerProfile.Optimized;
+
+    /// <summary>
+    /// 要求が利用シーンを明示しないときに使う利用シーン名（--scene）。空なら絞らない。
+    /// _meta を送れないクライアント（Claude Desktop など）向け。profile=optimized でだけ効く。
+    /// </summary>
+    public string DefaultScene { get; set; } = string.Empty;
+
+    /// <summary>
+    /// polyling_search の問い合わせ文と上位の結果も計測ログへ書くか（--metrics-search）。既定はオフ。
+    /// 問い合わせ文は利用者の言葉なので、量と成否だけを書く他の記録の例外になる。
+    /// </summary>
+    public bool MetricsSearch { get; set; }
+
+    /// <summary>計測ログ。--metrics が無ければ null（記録しない）。</summary>
+    public MetricsLog? Metrics { get; set; }
+
+    /// <summary>profile=generic で最後に tools/list を組み立てた結果。計測ログに載せる。</summary>
+    public GenericCommandTools.ListOutcome? LastGenericList { get; set; }
+
     /// <summary>
     /// 届くルート全部。先頭は必ずプロジェクト（名前なし）。
     /// 表示パスを作るときは前から順に見て、最初に内包したものを使う。

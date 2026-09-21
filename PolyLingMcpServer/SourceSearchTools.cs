@@ -57,9 +57,11 @@ public static class SourceSearchTools
         [Description("Lines of context shown after each match. 0 to 50.")] int context_after = 0,
         [Description("Maximum number of matching lines to return. 1 to 2000.")] int max_matches = 100,
         [Description("Maximum number of characters in the result.")] int max_output_chars = 60000,
-        [Description(EncodingDescription)] string encoding = "utf-8")
+        [Description(EncodingDescription)] string encoding = "utf-8",
+        [Description("If true, returns only the number of matching lines per file (\"path\tcount\"), not the lines themselves. "
+                   + "Use it first when a query may match many places.")] bool summary = false)
     {
-        ui.Log($"search_text \"{query}\" dir=\"{relative_dir}\" pattern={search_pattern} regex={regex} encoding={encoding}");
+        ui.Log($"search_text \"{query}\" dir=\"{relative_dir}\" pattern={search_pattern} regex={regex} encoding={encoding} summary={summary}");
 
         if (string.IsNullOrEmpty(query))
             return "ERROR: query must not be empty.";
@@ -103,6 +105,9 @@ public static class SourceSearchTools
         }
 
         var comparison = ignore_case ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+        if (summary)
+            return SummarizeMatches(state, root, search_pattern, fileEncoding, matcher, query, comparison, max_output_chars);
 
         var sb = new StringBuilder();
         int matches = 0;
@@ -256,6 +261,64 @@ public static class SourceSearchTools
             sb.Append($"TRUNCATED: output limit {max_output_chars} chars reached; matches so far={matches}.\n");
 
         sb.Append($"-- matches={matches}; files_with_match={filesWithMatch}; files_scanned={filesScanned}; files_skipped={filesSkipped}");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// search_text の summary=true。ファイルごとの一致行数だけを返す。
+    /// 行本文を運ばないので、当たりが多い問い合わせの見当付けに使う。
+    /// 出力が max_output_chars を超えるところで止め、止めたことを明示する。
+    /// </summary>
+    private static string SummarizeMatches(
+        ServerState state, string root, string searchPattern, Encoding fileEncoding,
+        Regex? matcher, string query, StringComparison comparison, int maxOutputChars)
+    {
+        var sb = new StringBuilder();
+        int totalMatches = 0, filesWithMatch = 0, filesScanned = 0, filesSkipped = 0, filesListed = 0;
+        bool truncated = false;
+
+        foreach (var file in EnumerateFiles(root, searchPattern))
+        {
+            try
+            {
+                if (new FileInfo(file).Length > MaxSearchFileBytes) { filesSkipped++; continue; }
+            }
+            catch (Exception) { filesSkipped++; continue; }
+
+            filesScanned++;
+            int count = 0;
+            try
+            {
+                foreach (var line in File.ReadLines(file, fileEncoding))
+                {
+                    bool hit = matcher != null ? matcher.IsMatch(line) : line.Contains(query, comparison);
+                    if (hit) count++;
+                }
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                return $"ERROR: the regular expression took too long on {PathGuard.ToDisplayPath(state, file)}. Use a simpler query.";
+            }
+            catch (Exception) { filesSkipped++; continue; }
+
+            if (count == 0) continue;
+            totalMatches += count;
+            filesWithMatch++;
+
+            if (truncated) continue;
+            var row = $"{PathGuard.ToDisplayPath(state, file)}\t{count}\n";
+            if (sb.Length + row.Length > maxOutputChars) { truncated = true; continue; }
+            sb.Append(row);
+            filesListed++;
+        }
+
+        if (totalMatches == 0)
+            return $"No matches. files_scanned={filesScanned}; files_skipped={filesSkipped}";
+
+        if (truncated)
+            sb.Append($"TRUNCATED: listed {filesListed} of {filesWithMatch} files (output limit {maxOutputChars} chars).\n");
+
+        sb.Append($"-- matches={totalMatches}; files_with_match={filesWithMatch}; files_scanned={filesScanned}; files_skipped={filesSkipped}");
         return sb.ToString();
     }
 

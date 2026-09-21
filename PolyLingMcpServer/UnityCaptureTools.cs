@@ -64,11 +64,22 @@ public static class UnityCaptureTools
         [Description("Bring the Unity window to the front before shooting. Leave this on unless the window is known to be in front already: "
                    + "the shot is taken at the end of a frame, and a background Editor with Run In Background off never gets there.")]
         bool focus = true,
+        [Description("Panel id to photograph instead of target, as listed by the PolyLing command uiDescribe. "
+                   + "The panel has to be open. Use it to check one panel without the whole window.")]
+        string panel_id = "",
+        [Description("Longest edge in pixels. A larger shot is scaled down to this before it is saved. 0 keeps the original size. "
+                   + "Anything above 1568 is scaled down again on the way to the model, so it only costs bytes.")]
+        int max_long_edge = 0,
+        [Description("File format: png (the default) or jpeg. jpeg is smaller for shaded views but blurs thin lines and text.")]
+        string format = "png",
+        [Description("jpeg quality, 1 to 100. Ignored for png.")]
+        int quality = 90,
         [Description("How long to wait for the whole thing, in milliseconds.")]
         int timeout_ms = 15000,
         CancellationToken cancellationToken = default)
     {
-        ui.Log($"unity_capture target={target} folder={folder} base_name={base_name} focus={focus}");
+        ui.Log($"unity_capture target={target} panel_id={panel_id} folder={folder} base_name={base_name} "
+             + $"max_long_edge={max_long_edge} format={format} focus={focus}");
 
         if (timeout_ms < 1000) timeout_ms = 1000;
 
@@ -92,9 +103,13 @@ public static class UnityCaptureTools
         {
             ["command"]    = "uiCapture",
             ["modelIndex"] = UnusedModelIndex,
-            ["target"]     = target,
-            ["baseName"]   = base_name,
-            ["folder"]     = folder ?? "",
+            ["target"]      = target,
+            ["baseName"]    = base_name,
+            ["folder"]      = folder ?? "",
+            ["panelId"]     = panel_id ?? "",
+            ["maxLongEdge"] = Math.Max(0, max_long_edge).ToString(),
+            ["format"]      = string.IsNullOrWhiteSpace(format) ? "png" : format.Trim(),
+            ["quality"]     = Math.Clamp(quality, 1, 100).ToString(),
         };
 
         var start = await CallEditorAsync(startArgs, Remaining(watch, deadline), cancellationToken)

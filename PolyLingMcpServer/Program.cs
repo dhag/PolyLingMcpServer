@@ -41,6 +41,20 @@ internal static class Program
         // （MQO は Shift_JIS で書かれている）。
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
+        // 計測ログの集計だけを行う（MCP サーバとしては起動しない）。--summarize-metrics の後ろの引数を全部 JSONL として読む。
+        int summarizeAt = Array.FindIndex(args, a => string.Equals(a, "--summarize-metrics", StringComparison.OrdinalIgnoreCase));
+        if (summarizeAt >= 0)
+        {
+            var files = args.Skip(summarizeAt + 1).Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToList();
+            if (files.Count == 0)
+            {
+                await Console.Error.WriteLineAsync("ERROR: --summarize-metrics needs one or more JSONL files.");
+                return 2;
+            }
+            Console.OutputEncoding = new UTF8Encoding(false);
+            return MetricsSummary.Run(files, Console.Out);
+        }
+
         var projectRoot = GetOption(args, "--project");
         var editableFolders = GetEditableFolders(args);
 
@@ -55,13 +69,24 @@ internal static class Program
             await Console.Error.WriteLineAsync(
                 "usage: PolyLingMcpServer.exe --project <unity-project-folder> "
                 + "[--editable <folder>] ... [--root <name>=<absolute folder>] ... [--unity-log <Editor.log path>] [--http <port>]\n"
+                + "                            [--profile generic|current|optimized] [--metrics <jsonl path>] [--scene <name>]\n"
                 + "  --editable may be repeated, or given once as a ';'-separated list.\n"
                 + "             Each item is a project-relative folder, or @<name>[/sub] for a --root folder.\n"
                 + "  --root     adds a readable folder outside the project, addressed as @<name>/path.\n"
                 + "             May be repeated. Example: --root settings=C:\\Users\\me\\AppData\\LocalLow\\Vendor\n"
                 + "  --unity-log defaults to %LOCALAPPDATA%\\Unity\\Editor\\Editor.log.\n"
                 + "  --http     serves Streamable HTTP on 127.0.0.1:<port>" + McpEndpointPath + " and the browser client on /.\n"
-                + "             Without it the server talks over stdin/stdout.");
+                + "             Without it the server talks over stdin/stdout.\n"
+                + "  --profile  which tool set to expose, for comparing costs (default optimized):\n"
+                + "             generic   = one MCP tool per PolyLing command (pl_<command>)\n"
+                + "             current   = polyling_tools + polyling_call, as before\n"
+                + "             optimized = polyling_search + polyling_describe + polyling_call\n"
+                + "  --metrics  appends one JSON line per tools/list and tools/call (sizes, time, success) to this file.\n"
+                + "  --metrics-search  also records polyling_search queries and their top results (off by default;\n"
+                + "             the query text is the user's words, unlike the other records).\n"
+                + "  --summarize-metrics <jsonl...>  prints a Markdown summary of metrics files and exits.\n"
+                + "  --scene    optimized only: the work scene (PolyLing setScene) used when a request names none.\n"
+                + "             Clients that can send _meta choose the scene per request with \"polyling/scene\".");
             return 2;
         }
 
@@ -85,8 +110,44 @@ internal static class Program
             httpPort = port;
         }
 
+        var profile = ServerProfile.Optimized;
+        if (HasOption(args, "--profile"))
+        {
+            var profileText = GetOption(args, "--profile");
+            if (!ProfileRules.TryParse(profileText, out profile))
+            {
+                await Console.Error.WriteLineAsync($"ERROR: --profile must be generic, current or optimized: {profileText ?? "(missing)"}");
+                return 2;
+            }
+        }
+
+        MetricsLog? metrics = null;
+        bool metricsSearch = HasOption(args, "--metrics-search");
+        if (HasOption(args, "--metrics"))
+        {
+            var metricsPath = GetOption(args, "--metrics");
+            if (string.IsNullOrWhiteSpace(metricsPath))
+            {
+                await Console.Error.WriteLineAsync("ERROR: --metrics needs a file path.");
+                return 2;
+            }
+            try
+            {
+                metrics = new MetricsLog(metricsPath);
+            }
+            catch (Exception ex)
+            {
+                await Console.Error.WriteLineAsync($"ERROR: --metrics {metricsPath}: {ex.Message}");
+                return 2;
+            }
+        }
+
         var state = new ServerState
         {
+            Profile = profile,
+            Metrics = metrics,
+            MetricsSearch = metricsSearch,
+            DefaultScene = (GetOption(args, "--scene") ?? string.Empty).Trim(),
             ProjectRoot = Path.GetFullPath(projectRoot),
             ExtraRoots = extraRoots,
             EditableFolders = editableFolders,
@@ -108,6 +169,13 @@ internal static class Program
         await Console.Error.WriteLineAsync($"roots: {state.RootsDisplay}");
         await Console.Error.WriteLineAsync($"editable: {state.EditableFoldersDisplay}");
         await Console.Error.WriteLineAsync($"unity log: {state.UnityLogPath}");
+        await Console.Error.WriteLineAsync($"profile: {ProfileRules.Name(state.Profile)}");
+        await Console.Error.WriteLineAsync($"metrics: {state.Metrics?.FullPath ?? "(off)"}"
+            + (state.Metrics != null && state.MetricsSearch ? " (+search queries)" : ""));
+        if (state.DefaultScene.Length > 0)
+            await Console.Error.WriteLineAsync(state.Profile == ServerProfile.Optimized
+                ? $"scene: {state.DefaultScene}"
+                : $"scene: {state.DefaultScene} (ignored: --scene works only with --profile optimized)");
 
 
         // 接続診断。stdout は JSON-RPC の経路なので stderr へ出す。
@@ -136,7 +204,7 @@ internal static class Program
         builder.Services.AddSingleton(state);
         builder.Services.AddSingleton(UiDispatcher.ForStandardError());
         builder.Services
-            .AddMcpServer()
+            .AddPolyLingMcp(state)
             .WithStdioServerTransport()
             .WithToolsFromAssembly(typeof(UnityProjectTools).Assembly);
 
@@ -168,7 +236,7 @@ internal static class Program
         builder.Services.AddSingleton(state);
         builder.Services.AddSingleton(UiDispatcher.ForStandardError());
         builder.Services
-            .AddMcpServer()
+            .AddPolyLingMcp(state)
             .WithHttpTransport()
             .WithToolsFromAssembly(typeof(UnityProjectTools).Assembly);
 

@@ -24,9 +24,12 @@ public static class UnityProjectTools
         UiDispatcher ui,
         [Description("Project-relative directory, for example Assets/MyPackage/Runtime. Empty means project root.")] string relative_dir = "",
         [Description("Search pattern such as *.cs. Defaults to *.cs.")] string search_pattern = "*.cs",
-        [Description("If true, searches all descendant directories.")] bool recursive = true)
+        [Description("If true, searches all descendant directories.")] bool recursive = true,
+        [Description("Maximum number of files to return. 1 to 5000.")] int max_results = MaxListFiles,
+        [Description("Internal: report the total when the list is cut short. Set by the server profile.")] bool note_truncation = false)
     {
-        ui.Log($"list_files dir=\"{relative_dir}\" pattern={search_pattern} recursive={recursive}");
+        ui.Log($"list_files dir=\"{relative_dir}\" pattern={search_pattern} recursive={recursive} max={max_results}");
+        max_results = Math.Clamp(max_results, 1, MaxListFiles);
 
         var dir = PathGuard.ResolveReadablePath(state, relative_dir);
         if (!Directory.Exists(dir))
@@ -36,23 +39,38 @@ public static class UnityProjectTools
 
         try
         {
-            var files = Directory.EnumerateFiles(dir, search_pattern, option)
+            var all = Directory.EnumerateFiles(dir, search_pattern, option)
                 .Select(path => new FileInfo(path))
                 .OrderBy(info => info.FullName, StringComparer.OrdinalIgnoreCase)
-                .Take(5000)
+                .ToArray();
+
+            var files = all
+                .Take(max_results)
                 .Select(info => $"{PathGuard.ToDisplayPath(state, info.FullName)}\t{info.Length} bytes")
                 .ToArray();
 
             if (files.Length == 0)
                 return "No files found.";
 
-            return string.Join(Environment.NewLine, files);
+            var text = string.Join(Environment.NewLine, files);
+
+            // 黙って先頭だけ返すと、呼び出し側が全部だと誤認する。
+            // profile=optimized でだけ付ける（note_truncation はサーバが入れる。McpSetup の注記）。
+            if (note_truncation && all.Length > files.Length)
+                text += Environment.NewLine
+                      + $"TRUNCATED: shown {files.Length} of {all.Length} files. "
+                      + "Narrow relative_dir or search_pattern, or raise max_results.";
+
+            return text;
         }
         catch (Exception ex)
         {
             return "ERROR: " + ex.Message;
         }
     }
+
+    /// <summary>list_files が一度に返す件数の上限。5ee9a518 までの固定値。</summary>
+    private const int MaxListFiles = 5000;
 
     [McpServerTool(Name = "read_file", ReadOnly = true),
      Description("Reads a text file from the configured Unity project. The path must be project-relative. "
@@ -130,6 +148,7 @@ public static class UnityProjectTools
         [Description("Exact existing text to replace.")] string old_text,
         [Description("Replacement text.")] string new_text,
         [Description("If true, replaces every occurrence. If false, old_text must occur exactly once.")] bool replace_all = false,
+        [Description("Internal: also report how much changed and the new hash. Set by the server profile.")] bool report_detail = false,
         CancellationToken cancellationToken = default)
     {
         try
@@ -169,7 +188,18 @@ public static class UnityProjectTools
 
             var patchedPath = PathGuard.ToDisplayPath(state, fullPath);
             ui.Log($"apply_patch {patchedPath} replacements={replaced}");
-            return $"OK: patched {patchedPath}; replacements={replaced}";
+
+            if (!report_detail)
+                return $"OK: patched {patchedPath}; replacements={replaced}";
+
+            // 変更量とハッシュを返すと、呼び出し側が読み直さずに「当たったか」を確かめられる。
+            int charsBefore = source.Length, charsAfter = patched.Length;
+            int linesBefore = CountLines(source), linesAfter = CountLines(patched);
+            bool needsRefresh = UnityAssetExtensions.Contains(Path.GetExtension(fullPath));
+
+            return $"OK: patched {patchedPath}; replacements={replaced}; "
+                 + $"chars={charsAfter - charsBefore:+#;-#;0}; lines={linesAfter - linesBefore:+#;-#;0}; "
+                 + $"hash={ShortHash(patched)}; unity_refresh_required={(needsRefresh ? "true" : "false")}";
         }
         catch (Exception ex)
         {
@@ -372,7 +402,7 @@ public static class UnityProjectTools
         => SendEditorActionAndWait("recompile", ui, timeout_ms, cancellationToken);
 
     /// <summary>refresh / recompile の既定の待ち時間。全スクリプトの再コンパイルを見込む。</summary>
-    private const int DefaultRefreshTimeoutMs = 120_000;
+    internal const int DefaultRefreshTimeoutMs = 120_000;
 
     /// <summary>refresh / recompile を送るときの応答待ち。受付だけなのですぐ返る。</summary>
     private const int RefreshAcceptTimeoutMs = 10_000;
@@ -403,7 +433,7 @@ public static class UnityProjectTools
     /// コンパイル中・インポート中は応答が返らず、ドメインリロード中は接続できない。
     /// その間は失敗とせず、上限まで待ち続ける。
     /// </summary>
-    private static async Task<string> SendEditorActionAndWait(
+    internal static async Task<string> SendEditorActionAndWait(
         string action,
         UiDispatcher ui,
         int timeout_ms,
@@ -558,7 +588,9 @@ public static class UnityProjectTools
 
     [McpServerTool(Name = "polyling_call", Destructive = true),
      Description("Runs one PolyLing command. Use polyling_tools first to see the command names and their arguments. Requires the PolyLing panel to be open.")]
+    // profile=optimized では応答に modelRevision / createdObjectIds / deletedObjectIds が付く（ServerProfile.cs）。
     public static Task<IEnumerable<ContentBlock>> PolyLingCall(
+        ServerState state,
         UiDispatcher ui,
         [Description("Command name from polyling_tools, for example 'smoothEdges'.")] string command,
         [Description("Arguments as a flat JSON object of string values, for example {\"strength\":\"0.5\"}. Nested values use dotted keys such as 'params.widthTop'. Arrays are sent as one comma-separated string such as \"1,2,3\".")] string? args = null,
@@ -583,6 +615,9 @@ public static class UnityProjectTools
         parameters["command"]    = command;
         parameters["modelIndex"] = model_index.ToString();
 
+        // 版と差分は profile=optimized のときだけ足す。他の条件の応答は 5ee9a518 のまま。
+        if (state.Profile == ServerProfile.Optimized) parameters["wantRevision"] = "1";
+
         return SendEditorRaw("call", parameters, ui, timeout_ms, cancellationToken);
     }
 
@@ -591,7 +626,7 @@ public static class UnityProjectTools
     /// tools and call answer with their own keys (tools / masterIndices /
     /// objectIds) rather than the single "data" string.
     /// </summary>
-    private static async Task<IEnumerable<ContentBlock>> SendEditorRaw(
+    internal static async Task<IEnumerable<ContentBlock>> SendEditorRaw(
         string action,
         IReadOnlyDictionary<string, string>? parameters,
         UiDispatcher ui,
@@ -646,7 +681,7 @@ public static class UnityProjectTools
     /// どちらの段で落ちたかを文言にする。
     /// ログファイルを開かなくても、道具の応答だけで切り分けられるようにする。
     /// </summary>
-    private static string StageMessage(EditorControlClient.EditorControlException ex, int timeoutMs)
+    internal static string StageMessage(EditorControlClient.EditorControlException ex, int timeoutMs)
         => ex.Stage == EditorControlClient.FailStage.Connect
             ? $"ERROR: ポートに接続できませんでした（{ex.ElapsedMs}ms / 上限 {timeoutMs}ms）。"
               + $"endpoint={EditorControlClient.Endpoint}; {ex.InnerName}。"
@@ -673,32 +708,51 @@ public static class UnityProjectTools
             throw new InvalidOperationException("the top level must be an object.");
 
         foreach (var p in root.EnumerateObject())
-        {
-            switch (p.Value.ValueKind)
-            {
-                case System.Text.Json.JsonValueKind.String:
-                    result[p.Name] = p.Value.GetString() ?? "";
-                    break;
-                case System.Text.Json.JsonValueKind.Number:
-                    result[p.Name] = p.Value.GetRawText();
-                    break;
-                case System.Text.Json.JsonValueKind.True:
-                    result[p.Name] = "true";
-                    break;
-                case System.Text.Json.JsonValueKind.False:
-                    result[p.Name] = "false";
-                    break;
-                default:
-                    throw new InvalidOperationException(
-                        $"\"{p.Name}\" is {p.Value.ValueKind}. Send arrays as one comma-separated string, "
-                        + "and nested values as dotted keys.");
-            }
-        }
+            result[p.Name] = ScalarText(p.Name, p.Value, allowArray: false);
 
         return result;
     }
 
-    private static string TimeoutMessage(int timeoutMs) =>
+    /// <summary>
+    /// JSON の値 1 つを Editor が受け取る文字列へ直す。
+    /// allowArray が true なら、スカラーの配列をカンマ区切りの 1 文字列にする
+    /// （PanelCommandFactory.TryParse が配列・ベクトルを "1,2,3" で受けるため）。
+    /// polyling_call は従来どおり配列を拒否する（allowArray=false）。
+    /// 1 コマンド 1 道具（profile=generic）は Schema が配列を宣言しているので受ける。
+    /// </summary>
+    internal static string ScalarText(string name, System.Text.Json.JsonElement value, bool allowArray)
+    {
+        switch (value.ValueKind)
+        {
+            case System.Text.Json.JsonValueKind.String:
+                return value.GetString() ?? "";
+            case System.Text.Json.JsonValueKind.Number:
+                return value.GetRawText();
+            case System.Text.Json.JsonValueKind.True:
+                return "true";
+            case System.Text.Json.JsonValueKind.False:
+                return "false";
+            case System.Text.Json.JsonValueKind.Array when allowArray:
+            {
+                var parts = new List<string>();
+                foreach (var item in value.EnumerateArray())
+                {
+                    if (item.ValueKind is System.Text.Json.JsonValueKind.Array or System.Text.Json.JsonValueKind.Object)
+                        throw new InvalidOperationException($"\"{name}\" contains a nested {item.ValueKind}; only arrays of scalars are accepted.");
+                    parts.Add(ScalarText(name, item, allowArray: false));
+                }
+                return string.Join(",", parts);
+            }
+            default:
+                throw new InvalidOperationException(
+                    allowArray
+                        ? $"\"{name}\" is {value.ValueKind}. Nested values use dotted keys."
+                        : $"\"{name}\" is {value.ValueKind}. Send arrays as one comma-separated string, "
+                          + "and nested values as dotted keys.");
+        }
+    }
+
+    internal static string TimeoutMessage(int timeoutMs) =>
         $"ERROR: the Unity Editor did not answer within {timeoutMs} ms. "
         + "It is probably compiling or importing assets; retry once it is idle.";
 
@@ -740,6 +794,26 @@ public static class UnityProjectTools
         }
 
         return result.Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    /// <summary>Unity に取り込ませ直す必要がある拡張子。apply_patch の報告に使う。</summary>
+    private static readonly HashSet<string> UnityAssetExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".cs", ".asmdef", ".asmref", ".shader", ".uxml", ".uss", ".json" };
+
+    /// <summary>変更後の中身のハッシュ。SHA-256 の先頭 16 桁（小文字 16 進）。</summary>
+    private static string ShortHash(string text)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(text));
+        return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
+    }
+
+    private static int CountLines(string text)
+    {
+        if (text.Length == 0) return 0;
+        int lines = 1;
+        for (int i = 0; i < text.Length; i++)
+            if (text[i] == '\n') lines++;
+        return lines;
     }
 
     private static int CountOccurrences(string source, string value)
