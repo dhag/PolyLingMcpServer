@@ -58,24 +58,51 @@ internal static class Program
         var projectRoot = GetOption(args, "--project");
         var editableFolders = GetEditableFolders(args);
 
+        // 接続先。player（ビルド版）のときは --project を省ける（ソースを扱う道具は隠れる）。
+        var target = ServerTarget.Editor;
+        if (HasOption(args, "--target"))
+        {
+            var targetText = GetOption(args, "--target");
+            if (!TargetRules.TryParse(targetText, out target))
+            {
+                await Console.Error.WriteLineAsync($"ERROR: --target must be editor or player: {targetText ?? "(missing)"}");
+                return 2;
+            }
+        }
+
+        bool hasProject = !string.IsNullOrWhiteSpace(projectRoot);
+
         // Editor.log の場所。Unity を -logFile 付きで起動しているときだけ指定する。
         var unityLogPath = GetOption(args, "--unity-log");
         if (string.IsNullOrWhiteSpace(unityLogPath))
             unityLogPath = DefaultUnityLogPath();
 
-        if (string.IsNullOrWhiteSpace(projectRoot) || !Directory.Exists(projectRoot))
+        bool projectUsable = hasProject && Directory.Exists(projectRoot);
+        bool projectMissingButAllowed = !hasProject && target == ServerTarget.Player;
+
+        if (!projectUsable && !projectMissingButAllowed)
         {
             // stdout is the JSON-RPC channel. Diagnostics always go to stderr.
             await Console.Error.WriteLineAsync(
                 "usage: PolyLingMcpServer.exe --project <unity-project-folder> "
                 + "[--editable <folder>] ... [--root <name>=<absolute folder>] ... [--unity-log <Editor.log path>] [--http <port>]\n"
                 + "                            [--profile generic|current|optimized] [--metrics <jsonl path>] [--scene <name>]\n"
+                + "                            [--target editor|player] [--capture-folder <folder>] [--player-exe <process name>]\n"
+                + "  --target   editor (default) talks to the Unity Editor on port " + EditorControlClient.Port + ".\n"
+                + "             player talks to a built PolyLing player on port " + EditorControlClient.PlayerPort + ";\n"
+                + "             source, compile, Play mode and Editor.log tools are hidden, --project may be omitted,\n"
+                + "             and unity_prefab_* still go to the Unity Editor.\n"
+                + "  --capture-folder  where unity_capture saves, and the folder filled in when uiCapture is called without one.\n"
+                + "             Project-relative, @<name>[/sub], or absolute. Default " + DefaultCaptureFolder + ".\n"
+                + "             With --target player and no --project it must be absolute, and it is the only folder read_image can read.\n"
+                + "  --player-exe  process name (without .exe) that unity_focus brings to the front when --target player.\n"
                 + "  --editable may be repeated, or given once as a ';'-separated list.\n"
                 + "             Each item is a project-relative folder, or @<name>[/sub] for a --root folder.\n"
                 + "  --root     adds a readable folder outside the project, addressed as @<name>/path.\n"
                 + "             May be repeated. Example: --root settings=C:\\Users\\me\\AppData\\LocalLow\\Vendor\n"
                 + "  --unity-log defaults to %LOCALAPPDATA%\\Unity\\Editor\\Editor.log.\n"
                 + "  --http     serves Streamable HTTP on 127.0.0.1:<port>" + McpEndpointPath + " and the browser client on /.\n"
+                + "             It also relays /openai/v1/responses and /openai/v1/models to api.openai.com for the browser client.\n"
                 + "             Without it the server talks over stdin/stdout.\n"
                 + "  --profile  which tool set to expose, for comparing costs (default optimized):\n"
                 + "             generic   = one MCP tool per PolyLing command (pl_<command>)\n"
@@ -144,15 +171,20 @@ internal static class Program
 
         var state = new ServerState
         {
+            Target = target,
             Profile = profile,
             Metrics = metrics,
             MetricsSearch = metricsSearch,
             DefaultScene = (GetOption(args, "--scene") ?? string.Empty).Trim(),
-            ProjectRoot = Path.GetFullPath(projectRoot),
+            ProjectRoot = projectUsable ? Path.GetFullPath(projectRoot!) : string.Empty,
             ExtraRoots = extraRoots,
             EditableFolders = editableFolders,
             UnityLogPath = Path.GetFullPath(unityLogPath)
         };
+
+        // player で --project が無いときは書き込み先を持たない（書く道具は TargetRules で隠れる）。
+        // 既定の "Assets" はプロジェクト相対なので、残すと下の検査で止まる。
+        if (!projectUsable) state.EditableFolders = [];
 
         // 打ち間違いをここで止める。起動してから「書けない」と言われるより、
         // 起動時に名前が引けないと分かる方が早い。
@@ -165,7 +197,38 @@ internal static class Program
             return 2;
         }
 
+        // キャプチャの保存先。どのルートの中でもなければ、撮れても読めないので起動時に止める。
+        if (!TryResolveCaptureFolder(state, GetOption(args, "--capture-folder"), out var captureFolder, out var captureError))
+        {
+            await Console.Error.WriteLineAsync("ERROR: --capture-folder " + captureError);
+            return 2;
+        }
+        state.CaptureFolder = captureFolder;
+
+        // player で --project が無いときは、キャプチャフォルダを読み取りの根にする。
+        // read_image が読めるのはここだけになる。
+        if (state.ProjectRoot.Length == 0)
+            state.ProjectRoot = captureFolder;
+
+        if (!PathGuard.TryGetContainingRoot(state, captureFolder, out _))
+        {
+            await Console.Error.WriteLineAsync(
+                $"ERROR: --capture-folder {captureFolder} is outside every readable root, so captures could not be read back. "
+                + $"Known roots: {state.RootsDisplay}");
+            return 2;
+        }
+
+        if (target == ServerTarget.Player)
+        {
+            var playerExe = (GetOption(args, "--player-exe") ?? string.Empty).Trim();
+            if (playerExe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) playerExe = playerExe[..^4];
+            state.FocusProcessName = playerExe;
+            EditorControlClient.TargetPort = EditorControlClient.PlayerPort;
+        }
+
         // 起動時に一度だけ出す。どこまで届くのかを stderr のログで確かめられるようにする。
+        await Console.Error.WriteLineAsync($"target: {TargetRules.Name(state.Target)} ({EditorControlClient.Endpoint})");
+        await Console.Error.WriteLineAsync($"capture folder: {state.CaptureFolder}");
         await Console.Error.WriteLineAsync($"roots: {state.RootsDisplay}");
         await Console.Error.WriteLineAsync($"editable: {state.EditableFoldersDisplay}");
         await Console.Error.WriteLineAsync($"unity log: {state.UnityLogPath}");
@@ -276,10 +339,140 @@ internal static class Program
         });
 
         app.MapMcp(McpEndpointPath);
+        MapOpenAiRelay(app);
 
         await Console.Error.WriteLineAsync($"http: http://127.0.0.1:{port}/  (MCP endpoint {McpEndpointPath})");
 
         await app.RunAsync();
+    }
+
+    /// <summary>--capture-folder を省いたときの保存先（プロジェクト相対）。</summary>
+    private const string DefaultCaptureFolder = "SandBox/Captures";
+
+    /// <summary>
+    /// --capture-folder を絶対パスにし、無ければ作る。
+    ///   絶対パス           … そのまま
+    ///   @名前[/以下]       … その --root の中
+    ///   それ以外           … プロジェクト相対（プロジェクトが無ければ失敗）
+    /// 省いたときはプロジェクト相対の DefaultCaptureFolder。
+    /// </summary>
+    private static bool TryResolveCaptureFolder(ServerState state, string? spec, out string fullPath, out string error)
+    {
+        fullPath = string.Empty;
+        error    = string.Empty;
+
+        bool hasProject = state.ProjectRoot.Length > 0;
+        var text = string.IsNullOrWhiteSpace(spec) ? DefaultCaptureFolder : spec.Trim();
+
+        try
+        {
+            if (Path.IsPathRooted(text))
+            {
+                fullPath = Path.GetFullPath(text);
+            }
+            else if (text[0] == '@')
+            {
+                if (!state.TryResolveEditableFolder(text, out fullPath))
+                {
+                    error = $"{text} names no known root. Known roots: {state.RootsDisplay}";
+                    return false;
+                }
+            }
+            else
+            {
+                if (!hasProject)
+                {
+                    error = string.IsNullOrWhiteSpace(spec)
+                        ? "is required as an absolute path when --target player is used without --project."
+                        : $"{text} is relative, but there is no --project to resolve it against. Give an absolute path.";
+                    return false;
+                }
+                fullPath = Path.GetFullPath(Path.Combine(state.ProjectRoot, text));
+            }
+
+            Directory.CreateDirectory(fullPath);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"{text}: {ex.Message}";
+            return false;
+        }
+    }
+
+    // ================================================================
+    // OpenAI API の中継（HTTP モードのみ）
+    // ================================================================
+    //
+    // ブラウザ用クライアント（WebClient/index.html）が OpenAI の Responses API を使うための経路。
+    // ブラウザから api.openai.com を直接呼べるか（CORS）は資料で確認できなかったので、
+    // 同じオリジンのこのサーバを通す。
+    //
+    //   POST /openai/v1/responses → https://api.openai.com/v1/responses
+    //   GET  /openai/v1/models    → https://api.openai.com/v1/models
+    //
+    // 中継するのはこの 2 つだけ（MapPost / MapGet に無いパスは 404）。
+    // API キーは保存しない。ブラウザが付けた Authorization ヘッダをそのまま渡すだけ。
+    // Origin の検査は RunHttp の前段がすでに行っている。
+
+    private const string OpenAiUpstream = "https://api.openai.com/v1/";
+
+    /// <summary>推論の長い応答を待つため、既定の 100 秒より長くする。</summary>
+    private static readonly HttpClient OpenAiHttp = new() { Timeout = TimeSpan.FromMinutes(10) };
+
+    private static void MapOpenAiRelay(WebApplication app)
+    {
+        app.MapPost("/openai/v1/responses", context => RelayToOpenAi(context, HttpMethod.Post, "responses"));
+        app.MapGet("/openai/v1/models", context => RelayToOpenAi(context, HttpMethod.Get, "models"));
+    }
+
+    private static async Task RelayToOpenAi(HttpContext context, HttpMethod method, string path)
+    {
+        var authorization = context.Request.Headers.Authorization.ToString();
+        if (authorization.Length == 0)
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            context.Response.ContentType = "application/json; charset=utf-8";
+            await context.Response.WriteAsync("{\"error\":{\"message\":\"Authorization header is missing.\"}}");
+            return;
+        }
+
+        using var request = new HttpRequestMessage(method, OpenAiUpstream + path);
+        request.Headers.TryAddWithoutValidation("Authorization", authorization);
+
+        if (method == HttpMethod.Post)
+        {
+            var content = new StreamContent(context.Request.Body);
+            content.Headers.TryAddWithoutValidation("Content-Type",
+                string.IsNullOrEmpty(context.Request.ContentType) ? "application/json" : context.Request.ContentType);
+            request.Content = content;
+        }
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await OpenAiHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, context.RequestAborted);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            if (context.RequestAborted.IsCancellationRequested) return; // ブラウザ側が中止した
+            await Console.Error.WriteLineAsync($"openai relay {path}: {ex.Message}");
+            context.Response.StatusCode = StatusCodes.Status502BadGateway;
+            context.Response.ContentType = "application/json; charset=utf-8";
+            await context.Response.WriteAsync(
+                System.Text.Json.JsonSerializer.Serialize(new { error = new { message = "relay to api.openai.com failed: " + ex.Message } }));
+            return;
+        }
+
+        using (response)
+        {
+            context.Response.StatusCode = (int)response.StatusCode;
+            if (response.Content.Headers.ContentType is { } type)
+                context.Response.ContentType = type.ToString();
+
+            await using var body = await response.Content.ReadAsStreamAsync(context.RequestAborted);
+            await body.CopyToAsync(context.Response.Body, context.RequestAborted);
+        }
     }
 
     private static bool HasOption(string[] args, string name) =>

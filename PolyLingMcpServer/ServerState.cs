@@ -50,6 +50,19 @@ public sealed class ServerState
 
     public CompileResult? LastCompileResult { get; private set; }
 
+    /// <summary>接続先（--target）。起動中は変わらない。</summary>
+    public ServerTarget Target { get; set; } = ServerTarget.Editor;
+
+    /// <summary>
+    /// 画面キャプチャの保存先（絶対パス、--capture-folder）。
+    /// unity_capture の folder はここからの相対で、polyling_call などで uiCapture の
+    /// folder を省いたときもここを補う（UnityCaptureTools.ApplyDefaultCaptureFolder）。
+    /// </summary>
+    public string CaptureFolder { get; set; } = string.Empty;
+
+    /// <summary>unity_focus が探すプロセス名（拡張子なし）。editor は Unity、player は --player-exe。</summary>
+    public string FocusProcessName { get; set; } = "Unity";
+
     /// <summary>比較用の条件。--profile で決まり、起動中は変わらない。</summary>
     public ServerProfile Profile { get; set; } = ServerProfile.Optimized;
 

@@ -171,6 +171,9 @@ public static class GenericCommandTools
         parameters["command"]    = command;
         parameters["modelIndex"] = modelIndex.ToString();
 
+        // uiCapture で保存先を省いたら、キャプチャフォルダへ撮らせる（UnityCaptureTools）。
+        UnityCaptureTools.ApplyDefaultCaptureFolder(state, command, parameters);
+
         // 応答の形は polyling_call と同じにする（失敗も "ERROR: " 始まりのテキストで返し、
         // isError は立てない）。条件の違いを「道具の見せ方」だけに保つため。
         var blocks = await UnityProjectTools.SendEditorRaw("call", parameters, ui, CallTimeoutMs, cancellationToken);

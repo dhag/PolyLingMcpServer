@@ -31,11 +31,27 @@ public static class EditorControlClient
     /// <summary>Must match PolyLingEditorControlServer.Port on the Unity side.</summary>
     public const int Port = 8770;
 
+    /// <summary>
+    /// ビルド版（Player）の受信ポート。Unity 側の PolyLingPlayerControlServer.Port と一致させること。
+    /// Editor と別にしてあるのは、ビルド版から Editor 拡張へ送る経路（sendHierarchyBundle や
+    /// unity_prefab_*）を使うときに両方を同時に動かすため。
+    /// </summary>
+    public const int PlayerPort = 8772;
+
+    /// <summary>
+    /// SendAsync の既定の接続先。--target player のとき Program が PlayerPort にする。
+    /// Editor にしか無い操作（unity_prefab_*）は SendToEditorAsync で Port へ送る。
+    /// </summary>
+    public static int TargetPort { get; set; } = Port;
+
     /// <summary>Loopback only. The Editor binds IPAddress.Loopback.</summary>
     public const string Host = "127.0.0.1";
 
     /// <summary>ログや文言に出す接続先。</summary>
-    public static string Endpoint => $"{Host}:{Port}";
+    public static string Endpoint => $"{Host}:{TargetPort}";
+
+    /// <summary>Editor の接続先。ログや文言に出す。</summary>
+    public static string EditorEndpoint => $"{Host}:{Port}";
 
     /// <summary>
     /// Which half of the exchange failed. The caller turns this into a message,
@@ -63,16 +79,33 @@ public static class EditorControlClient
         }
     }
 
-    /// <summary>One connection per call. The Editor domain reloads often, so no channel is kept open.</summary>
-    public static async Task<EditorControlResult> SendAsync(
+    /// <summary>既定の接続先（TargetPort）へ送る。</summary>
+    public static Task<EditorControlResult> SendAsync(
         string action,
         int timeoutMs,
         IReadOnlyDictionary<string, string>? parameters = null,
         CancellationToken cancellationToken = default)
+        => SendToAsync(TargetPort, action, timeoutMs, parameters, cancellationToken);
+
+    /// <summary>--target にかかわらず Editor（Port）へ送る。Editor にしか無い操作に使う。</summary>
+    public static Task<EditorControlResult> SendToEditorAsync(
+        string action,
+        int timeoutMs,
+        IReadOnlyDictionary<string, string>? parameters = null,
+        CancellationToken cancellationToken = default)
+        => SendToAsync(Port, action, timeoutMs, parameters, cancellationToken);
+
+    /// <summary>One connection per call. The Editor domain reloads often, so no channel is kept open.</summary>
+    private static async Task<EditorControlResult> SendToAsync(
+        int port,
+        string action,
+        int timeoutMs,
+        IReadOnlyDictionary<string, string>? parameters,
+        CancellationToken cancellationToken)
     {
         timeoutMs = Math.Clamp(timeoutMs, 100, 60_000);
 
-        using var client = new TcpDuplexClient(Host, Port);
+        using var client = new TcpDuplexClient(Host, port);
 
         // 接続と応答待ちを別々に測る。どちらで落ちたかが分からないと、
         // ポートが開いていないのか Editor が黙っているのかを切り分けられない。

@@ -615,6 +615,9 @@ public static class UnityProjectTools
         parameters["command"]    = command;
         parameters["modelIndex"] = model_index.ToString();
 
+        // uiCapture で保存先を省いたら、キャプチャフォルダへ撮らせる（UnityCaptureTools）。
+        UnityCaptureTools.ApplyDefaultCaptureFolder(state, command, parameters);
+
         // 版と差分は profile=optimized のときだけ足す。他の条件の応答は 5ee9a518 のまま。
         if (state.Profile == ServerProfile.Optimized) parameters["wantRevision"] = "1";
 

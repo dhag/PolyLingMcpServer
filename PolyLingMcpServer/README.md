@@ -34,8 +34,24 @@ PolyLingMcpServer.exe --project <unity-project-folder> [--editable <folder>] ...
   Unity is started with `-logFile`.
 - `--http` switches from stdio to Streamable HTTP on `127.0.0.1:<port>`. A value that is not
   a port number 1-65535 stops startup.
+- `--target editor|player` chooses what the server talks to. `editor` (default) is the Unity
+  Editor on port 8770. `player` is a built PolyLing player on port 8772
+  (`PolyLingPlayerControlServer`). With `player`, `--project` may be omitted, and the tools a
+  build cannot serve are hidden: source read/write/search, `read_binary` / `write_binary` /
+  `delete_path`, `compile` / `get_compile_errors`, `unity_play` / `unity_stop` /
+  `unity_refresh` / `unity_recompile`, `unity_validate_changes` and `read_unity_log`.
+  `unity_prefab_export` / `unity_prefab_instantiate` / `unity_prefab_import` stay visible and
+  always go to the Editor on 8770, so files made in a build can still become prefabs while the
+  Editor is open. `sendHierarchyBundle` (through `polyling_call`) also works from a build.
+- `--capture-folder` is where `unity_capture` saves, and the folder filled in when `uiCapture`
+  is called through `polyling_call` / `pl_uiCapture` without one. Project-relative,
+  `@<name>[/sub]` or absolute; default `SandBox/Captures`. It is created at startup and must lie
+  inside a readable root. With `--target player` and no `--project` it must be absolute, and it
+  becomes the only folder `read_image` can read.
+- `--player-exe` is the process name (without `.exe`) that `unity_focus` brings to the front
+  with `--target player`.
 
-At startup the resolved roots, editable folders and log path are written to stderr.
+At startup the target, capture folder, resolved roots, editable folders and log path are written to stderr.
 
 ### claude_desktop_config.json
 
@@ -72,6 +88,7 @@ must be on one machine: it binds `127.0.0.1` only.
 |---|---|
 | `/` | The browser client, `WebClient/index.html`, embedded in the executable |
 | `/mcp` | The MCP endpoint (Streamable HTTP, protocol `2026-07-28`, stateless) |
+| `/openai/v1/responses` (POST), `/openai/v1/models` (GET) | Relay to `https://api.openai.com/v1/…` for the browser client |
 
 - **Same origin, no CORS.** The page and `/mcp` share one origin, so nothing is configured
   for cross-origin access.
@@ -86,9 +103,21 @@ must be on one machine: it binds `127.0.0.1` only.
   `anthropic-dangerous-direct-browser-access: true`; without that header the API returns no
   CORS headers and the browser cannot read the reply. The key is held only in the page and
   is gone on reload.
+- **The OpenAI API goes through this server.** Choosing `OpenAI` in the page's API selector
+  switches to the Responses API. Whether `api.openai.com` can be called straight from a
+  browser (CORS) could not be confirmed, so the page posts to `/openai/v1/responses` on this
+  server, which forwards the request with the browser's `Authorization` header and streams
+  the answer back. Only those two paths are relayed; the key is not stored. Requests are sent
+  with `store: false`, and the returned output items (reasoning with its encrypted content,
+  messages, function calls) are sent back as the next input. Switching the API clears the
+  conversation, since the two history formats do not convert without loss. The cache
+  checkbox applies to Anthropic only; the CSV gains a `provider` column. For OpenAI,
+  `cacheReadTokens` is `input_tokens_details.cached_tokens` and is subtracted from
+  `inputTokens`; `cacheWriteTokens` is `input_tokens_details.cache_write_tokens` and is **not**
+  subtracted, because whether `input_tokens` includes it was not confirmed.
 - **Tool calls run without confirmation**, including `write_file`, `apply_patch`,
   `write_binary` and `delete_path`. The editable folders are the limit, exactly as in stdio
-  mode. One send stops after 30 Claude/tool round trips (`MAX_TOOL_ROUNDS` in the page).
+  mode. One send stops after 30 model/tool round trips (`MAX_TOOL_ROUNDS` in the page).
 - `WebClient/index.html` is an `EmbeddedResource`; after editing it, rebuild. Its resource
   name is `Program.WebClientResourceName`, and its `MCP_ENDPOINT` must match
   `Program.McpEndpointPath`.
@@ -225,10 +254,11 @@ wrong.
   Run In Background off, no frame finishes and the job stays `pending` for good.
   Focusing is therefore part of the procedure, not something to remember.
 
-`folder` defaults to `.` — the work folder itself. An empty `folder` means whatever the
-capture panel is set to, which may be outside every root; then the read is refused,
-because the roots are the whole of this server's reach. The PNG is kept and its
-project-relative path is reported, so `read_image` can show it again later.
+`folder` is a sub-folder of the capture folder (`--capture-folder`, default
+`SandBox/Captures`); empty means the capture folder itself. Absolute paths and `..` are
+refused. The server hands Unity an absolute path, which `PLSandbox` accepts as long as it is
+inside the PolyLing work folder. The PNG is kept and its project-relative path is reported,
+so `read_image` can show it again later.
 
 Measured: `target=MainView` takes 717x507 / 42KB, `target=Window` 1960x830 / 150KB, both
 completing on the first status check. Over-size is a refusal with the file left on disk;
@@ -255,7 +285,7 @@ commands that return no image are unaffected.
 
 **No PolyLing command returns an image yet**, so this path is written but not exercised.
 Screen captures take the other route, which `unity_capture` wraps up: `uiCapture` writes
-a PNG under the work folder, `uiCaptureStatus` reports the path, and the file is read
+a PNG under the capture folder, `uiCaptureStatus` reports the path, and the file is read
 from disk. When adding a command that does return an image, check separately that the
 transport survives it — `EditorControlClient` exchanges one JSON per line, and an
 embedded image makes that line hundreds of thousands of characters long.
@@ -334,7 +364,8 @@ is rewritten with `write_file overwrite=true` instead.
 |---|---|
 | `Program.cs` | Startup, argument parsing, stdio and HTTP transports, Origin check, encoding registration |
 | `WebClient/index.html` | Browser client served on `/` in HTTP mode (embedded resource) |
-| `ServerState.cs` | Project root, extra roots, editable folders, Unity log path |
+| `ServerState.cs` | Project root, extra roots, editable folders, Unity log path, target, capture folder |
+| `ServerTarget.cs` | `--target editor` / `player` and the tools hidden for a build |
 | `PathGuard.cs` | Root resolution, path containment and extension rules |
 | `UnityProjectTools.cs` | File, compile, `unity_*` and `polyling_*` tools |
 | `SourceSearchTools.cs` | `search_text`, `read_lines` |

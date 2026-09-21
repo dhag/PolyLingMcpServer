@@ -20,6 +20,11 @@ namespace PolyLingMcpServer;
 /// 【パス】
 ///   プロジェクトファイル側（model_folder / output_folder）は PolyLing の作業フォルダ基準で、
 ///   Editor 側が PLSandbox で解決する。プレファブ側は Assets/ 以下のアセットパス。
+///
+/// 【接続先は常に Editor】
+///   --target player でも EditorControlClient.SendToEditorAsync で Editor（8770）へ送る。
+///   ビルド版で作ったファイルを Editor 拡張でプレファブにする使い方があるため、
+///   player のときもこの 3 つは隠さない（ServerTarget.cs）。
 /// </summary>
 [McpServerToolType]
 public static class UnityPrefabTools
@@ -158,7 +163,7 @@ public static class UnityPrefabTools
         EditorControlResult first;
         try
         {
-            first = await EditorControlClient.SendAsync("state", PollReplyMs, null, cancellationToken);
+            first = await EditorControlClient.SendToEditorAsync("state", PollReplyMs, null, cancellationToken);
         }
         catch (EditorControlClient.EditorControlException ex)
         {
@@ -170,7 +175,7 @@ public static class UnityPrefabTools
         }
         catch (Exception ex)
         {
-            return $"ERROR: could not reach the Unity Editor on {EditorControlClient.Endpoint}. Is it open? {ex.Message}";
+            return $"ERROR: could not reach the Unity Editor on {EditorControlClient.EditorEndpoint}. Is it open? {ex.Message}";
         }
 
         if (!first.Success)
@@ -187,7 +192,7 @@ public static class UnityPrefabTools
             EditorControlResult stop;
             try
             {
-                stop = await EditorControlClient.SendAsync("stop", StopAcceptTimeoutMs, null, cancellationToken);
+                stop = await EditorControlClient.SendToEditorAsync("stop", StopAcceptTimeoutMs, null, cancellationToken);
             }
             catch (EditorControlClient.EditorControlException ex)
             {
@@ -220,7 +225,7 @@ public static class UnityPrefabTools
             EditorControlResult polled;
             try
             {
-                polled = await EditorControlClient.SendAsync("state", PollReplyMs, null, cancellationToken);
+                polled = await EditorControlClient.SendToEditorAsync("state", PollReplyMs, null, cancellationToken);
             }
             catch (EditorControlClient.EditorControlException ex)
             {
@@ -255,7 +260,7 @@ public static class UnityPrefabTools
 
         try
         {
-            var result = await EditorControlClient.SendAsync(action, remaining, parameters, cancellationToken);
+            var result = await EditorControlClient.SendToEditorAsync(action, remaining, parameters, cancellationToken);
 
             if (!result.Success)
                 return $"ERROR: {prefix}the Unity Editor rejected '{action}': {result.Error}";
@@ -272,7 +277,7 @@ public static class UnityPrefabTools
         }
         catch (Exception ex)
         {
-            return $"ERROR: {prefix}could not reach the Unity Editor on {EditorControlClient.Endpoint}. {ex.Message}";
+            return $"ERROR: {prefix}could not reach the Unity Editor on {EditorControlClient.EditorEndpoint}. {ex.Message}";
         }
     }
 
@@ -297,6 +302,6 @@ public static class UnityPrefabTools
 
     private static string StageMessage(EditorControlClient.EditorControlException ex, int timeoutMs)
         => ex.Stage == EditorControlClient.FailStage.Connect
-            ? $"ERROR: could not connect to {EditorControlClient.Endpoint} within {ex.ElapsedMs} ms (limit {timeoutMs} ms); {ex.InnerName}. Is the Unity Editor open?"
+            ? $"ERROR: could not connect to {EditorControlClient.EditorEndpoint} within {ex.ElapsedMs} ms (limit {timeoutMs} ms); {ex.InnerName}. Is the Unity Editor open?"
             : $"ERROR: connected, but no answer within {ex.ElapsedMs} ms (limit {timeoutMs} ms); {ex.InnerName}. Is the Editor compiling or importing?";
 }

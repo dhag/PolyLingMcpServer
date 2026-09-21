@@ -18,6 +18,8 @@
     }
   }
   * { box-sizing: border-box; }
+  /* label は display:flex なので、hidden 属性だけでは消えない。 */
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.6 var(--sans); }
   header { padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
            display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: end; }
@@ -58,13 +60,21 @@
 <body>
 <header>
   <h1>PolyLing MCP</h1>
-  <label>Anthropic API キー<input id="apiKey" type="password" autocomplete="off" spellcheck="false"></label>
+  <label>API<select id="provider" autocomplete="off">
+    <option value="anthropic">Anthropic</option>
+    <option value="openai">OpenAI</option>
+  </select></label>
+  <label id="apiKeyLabel">Anthropic API キー<input id="apiKey" type="password" autocomplete="off" spellcheck="false"></label>
+  <label id="openaiKeyLabel" hidden>OpenAI API キー<input id="openaiKey" type="password" autocomplete="off" spellcheck="false"></label>
   <label>モデル<input id="model" list="models" value="claude-sonnet-5" spellcheck="false"></label>
   <datalist id="models">
     <option value="claude-haiku-4-5"></option>
     <option value="claude-sonnet-5"></option>
     <option value="claude-opus-5"></option>
   </datalist>
+  <!-- OpenAI のモデル名はコードに固定しない。「モデル一覧」で /v1/models から取る。 -->
+  <datalist id="openaiModels"></datalist>
+  <button id="openaiModelsLoad" class="ghost" hidden title="OpenAI の /v1/models からモデル名の候補を取る">モデル一覧</button>
   <label>max_tokens<input id="maxTokens" type="number" min="1" value="4096"></label>
   <button id="connect" class="ghost">MCP サーバに接続</button>
   <button id="clear" class="ghost">会話をクリア</button>
@@ -117,11 +127,26 @@ const CLIENT_INFO = { name: "PolyLingWebClient", version: "1.0.0" };
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 
-// 1 回の送信で Claude とツールを往復する上限。暴走したときに API キーの利用額を食い潰さないための止め。
+// OpenAI はこのサーバの中継（Program.cs の MapOpenAiRelay）を通す。同じオリジンなので CORS が要らない。
+// 中継は API キーを保存せず、ブラウザが付けた Authorization ヘッダをそのまま api.openai.com へ渡す。
+const OPENAI_RESPONSES_URL = "/openai/v1/responses";
+const OPENAI_MODELS_URL = "/openai/v1/models";
+
+// Responses API の max_output_tokens の下限（API リファレンス: minimum 16）。
+const OPENAI_MIN_OUTPUT_TOKENS = 16;
+
+// 表示名。画面の発言者と CSV の provider 列に使う。
+const PROVIDER_LABEL = { anthropic: "claude", openai: "openai" };
+
+// 1 回の送信でモデルとツールを往復する上限。暴走したときに API キーの利用額を食い潰さないための止め。
 const MAX_TOOL_ROUNDS = 30;
 
 // Anthropic のツール名の制約（define-tools: ^[a-zA-Z0-9_-]{1,128}$）。
 const ANTHROPIC_TOOL_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
+
+// OpenAI の関数名。リファレンスで確かめられたのは最大 128 文字まで。文字の種類は Anthropic と同じ範囲に絞る
+// （それより広い文字を許すかは確認していないので、狭い側に合わせる）。
+const OPENAI_TOOL_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
 
 // ---------------------------------------------------------------------------
 // 状態
@@ -129,8 +154,13 @@ const ANTHROPIC_TOOL_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
 
 let mcpTools = [];          // tools/list の結果（x-mcp-header 検証を通ったもの）
 let anthropicTools = [];    // Anthropic に渡す tools
-let serverInstructions = ""; // server/discover の instructions（あれば system に入れる）
-let messages = [];          // Anthropic Messages API の会話履歴
+let openaiTools = [];       // OpenAI Responses API に渡す tools（type:"function"）
+let serverInstructions = ""; // server/discover の instructions（あれば system / instructions に入れる）
+// 会話履歴。形は provider で違う（Anthropic は messages、OpenAI は Responses API の input 項目）。
+// 互いに変換すると推論の途中経過などが失われるので、API を切り替えたら消す。
+let messages = [];
+let provider = "anthropic";
+const modelByProvider = { anthropic: "claude-sonnet-5", openai: "" };
 let rpcId = 0;
 let busy = false;
 let abortController = null;
@@ -140,7 +170,7 @@ let serverName = "";        // 接続先の serverInfo（name version）。versi
 // 計測
 // ---------------------------------------------------------------------------
 //
-// Claude API の 1 往復（round）ごとに usage を 1 行記録する。課題の開始・終了も 1 行ずつ。
+// モデルの API の 1 往復（round）ごとに usage を 1 行記録する（Anthropic / OpenAI 共通。provider 列で区別）。課題の開始・終了も 1 行ずつ。
 // taskId は MCP 要求の _meta へ入れてサーバへ渡し、サーバ側の計測ログ（--metrics）と突き合わせる。
 // 料金単価は画面で入力する（コードに固定しない）。空欄なら費用は空欄のまま。
 
@@ -178,30 +208,68 @@ function showTaskStatus() {
     `tools=${t.toolUses} resultBytes=${t.toolResultBytes}` + (cost === null ? "" : ` ≈ $${cost.toFixed(4)}`);
 }
 
+/**
+ * usage を API ごとに読み、4 つの数へそろえる。
+ *   input      … キャッシュを使わなかった入力
+ *   output     … 出力（OpenAI は推論トークンを含む）
+ *   cacheWrite … キャッシュへの書込
+ *   cacheRead  … キャッシュからの読込
+ * Anthropic の input_tokens はもともとキャッシュ分を含まない。
+ * OpenAI の input_tokens はキャッシュ読込（input_tokens_details.cached_tokens）を含むので引く。
+ * OpenAI の input_tokens_details.cache_write_tokens は書込として記録するが、input_tokens に
+ * 含まれるかは確認できていないので input からは引かない（費用は書込分が二重になりうる）。
+ */
+function normalizeUsage(u) {
+  u = u || {};
+  if (provider === "openai") {
+    const d = u.input_tokens_details || {};
+    const cached = d.cached_tokens ?? 0;
+    return {
+      input: Math.max(0, (u.input_tokens ?? 0) - cached),
+      output: u.output_tokens ?? 0,
+      cacheWrite: d.cache_write_tokens ?? 0,
+      cacheRead: cached
+    };
+  }
+  return {
+    input: u.input_tokens ?? 0,
+    output: u.output_tokens ?? 0,
+    cacheWrite: u.cache_creation_input_tokens ?? 0,
+    cacheRead: u.cache_read_input_tokens ?? 0
+  };
+}
+
+/** いまの API へ渡している道具定義。 */
+function currentToolDefs() {
+  return provider === "openai" ? openaiTools : anthropicTools;
+}
+
 /** 応答を受け取った時点で 1 行記録する（中止しても費用は掛かっているため）。行を返す。 */
-function recordRound(reply, toolUses) {
+function recordRound(reply, stopReason, toolUses) {
   const toolResultBytes = 0;
-  const u = reply.usage || {};
+  const u = normalizeUsage(reply.usage);
+  const defs = currentToolDefs();
   const row = {
     kind: "round",
     ts: new Date().toISOString(),
     taskId: currentTask?.id ?? "",
     label: currentTask?.label ?? "",
+    provider,
     server: serverName,
     scene: currentScene,
     model: reply.model ?? $("model").value.trim(),
     round: currentTask ? currentTask.rounds + 1 : "",
-    inputTokens: u.input_tokens ?? 0,
-    outputTokens: u.output_tokens ?? 0,
-    cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
-    cacheReadTokens: u.cache_read_input_tokens ?? 0,
-    stopReason: reply.stop_reason ?? "",
+    inputTokens: u.input,
+    outputTokens: u.output,
+    cacheWriteTokens: u.cacheWrite,
+    cacheReadTokens: u.cacheRead,
+    stopReason: stopReason ?? "",
     toolUses,
     toolResultBytes,
-    toolsDefBytes: anthropicTools.length > 0 ? utf8Bytes(JSON.stringify(anthropicTools)) : 0,
+    toolsDefBytes: defs.length > 0 ? utf8Bytes(JSON.stringify(defs)) : 0,
     systemBytes: serverInstructions ? utf8Bytes(serverInstructions) : 0,
     requestBytes: lastRequestBytes,
-    cache: $("useCache").checked ? "on" : "off",
+    cache: cacheEnabled() ? "on" : "off",
     compactK: compactKeep() ?? "",
     costUsd: "",
     outcome: ""
@@ -239,8 +307,8 @@ function startTask() {
   messages = [];
   $("log").replaceChildren();
   currentTask = { id, label, startedAt, rounds: 0, input: 0, output: 0, cacheW: 0, cacheR: 0, toolUses: 0, toolResultBytes: 0 };
-  metricRows.push({ kind: "task_start", ts: startedAt.toISOString(), taskId: id, label, server: serverName, scene: currentScene,
-    model: $("model").value.trim(), cache: $("useCache").checked ? "on" : "off", compactK: compactKeep() ?? "" });
+  metricRows.push({ kind: "task_start", ts: startedAt.toISOString(), taskId: id, label, provider, server: serverName, scene: currentScene,
+    model: $("model").value.trim(), cache: cacheEnabled() ? "on" : "off", compactK: compactKeep() ?? "" });
   addInfo(`課題開始: ${id}（${serverName || "未接続"}）`);
   $("taskOk").disabled = false; $("taskNg").disabled = false;
   showTaskStatus();
@@ -251,7 +319,7 @@ function endTask(outcome) {
   const t = currentTask;
   const cost = costUsd(t.input, t.output, t.cacheW, t.cacheR);
   metricRows.push({
-    kind: "task_end", ts: new Date().toISOString(), taskId: t.id, label: t.label, server: serverName, scene: currentScene,
+    kind: "task_end", ts: new Date().toISOString(), taskId: t.id, label: t.label, provider, server: serverName, scene: currentScene,
     model: $("model").value.trim(), round: t.rounds,
     inputTokens: t.input, outputTokens: t.output, cacheWriteTokens: t.cacheW, cacheReadTokens: t.cacheR,
     toolUses: t.toolUses, toolResultBytes: t.toolResultBytes,
@@ -264,7 +332,7 @@ function endTask(outcome) {
   showTaskStatus();
 }
 
-const CSV_COLUMNS = ["kind", "ts", "taskId", "label", "server", "scene", "model", "round",
+const CSV_COLUMNS = ["kind", "ts", "taskId", "label", "provider", "server", "scene", "model", "round",
   "inputTokens", "outputTokens", "cacheWriteTokens", "cacheReadTokens", "stopReason",
   "toolUses", "toolResultBytes", "toolsDefBytes", "systemBytes", "requestBytes", "cache", "compactK",
   "wallMs", "costUsd", "outcome"];
@@ -494,6 +562,7 @@ async function loadTools() {
 
   mcpTools = [];
   anthropicTools = [];
+  openaiTools = [];
   for (const tool of tools) {
     const check = collectMcpHeaders(tool.inputSchema);
     if (!check.ok) {
@@ -501,14 +570,23 @@ async function loadTools() {
       addInfo(`ツール ${tool.name} を除外（x-mcp-header 不正: ${check.reason}）`);
       continue;
     }
-    if (!ANTHROPIC_TOOL_NAME.test(tool.name)) {
-      addInfo(`ツール ${tool.name} を除外（Anthropic のツール名の制約に合わない）`);
+    // 両方の API に同じ道具を見せる。どちらかの名前の制約に合わなければ両方から外す
+    // （API を切り替えたときに道具の数が変わると、計測の比較が崩れるため）。
+    if (!ANTHROPIC_TOOL_NAME.test(tool.name) || !OPENAI_TOOL_NAME.test(tool.name)) {
+      addInfo(`ツール ${tool.name} を除外（ツール名の制約に合わない）`);
       continue;
     }
     mcpTools.push({ ...tool, mcpHeaders: check.headers });
+
     const def = { name: tool.name, input_schema: tool.inputSchema };
     if (tool.description) def.description = tool.description;
     anthropicTools.push(def);
+
+    // strict は付けない。MCP の inputSchema は strict の条件（全項目 required、additionalProperties:false）を
+    // 満たさないので、付けると API が拒否するか省略可能な引数を必須に変えてしまう。
+    const fn = { type: "function", name: tool.name, parameters: tool.inputSchema, strict: false };
+    if (tool.description) fn.description = tool.description;
+    openaiTools.push(fn);
   }
 }
 
@@ -687,7 +765,12 @@ function applyCache(body) {
   }
 }
 
-let lastRequestBytes = 0;   // 直前に Claude API へ送った本文のバイト数（計測用）
+let lastRequestBytes = 0;   // 直前に API へ送った本文のバイト数（計測用）
+
+/** キャッシュの区切りを付けるか。OpenAI はキャッシュが自動で効くので欄を使わない。 */
+function cacheEnabled() {
+  return provider === "anthropic" && $("useCache").checked;
+}
 
 async function callClaude(signal) {
   const keep = compactKeep();
@@ -698,7 +781,7 @@ async function callClaude(signal) {
   };
   if (anthropicTools.length > 0) body.tools = anthropicTools;
   if (serverInstructions) body.system = serverInstructions;
-  if ($("useCache").checked) applyCache(body);
+  if (cacheEnabled()) applyCache(body);
 
   const payload = JSON.stringify(body);
   lastRequestBytes = utf8Bytes(payload);
@@ -724,7 +807,11 @@ async function callClaude(signal) {
   return json;
 }
 
-async function runTurn(userText) {
+function runTurn(userText) {
+  return provider === "openai" ? runTurnOpenAI(userText) : runTurnAnthropic(userText);
+}
+
+async function runTurnAnthropic(userText) {
   const historyLength = messages.length;
   abortController = new AbortController();
   const signal = abortController.signal;
@@ -742,7 +829,8 @@ async function runTurn(userText) {
       const reply = await callClaude(signal);
       const content = reply.content || [];
       // max_tokens で途切れた tool_use は実行しないので数えない。
-      const roundRow = recordRound(reply, reply.stop_reason === "tool_use" ? content.filter(b => b.type === "tool_use").length : 0);
+      const roundRow = recordRound(reply, reply.stop_reason,
+        reply.stop_reason === "tool_use" ? content.filter(b => b.type === "tool_use").length : 0);
 
       for (const block of content) {
         if (block.type === "text" && block.text) addMessage("assistant", block.text);
@@ -789,6 +877,228 @@ async function runTurn(userText) {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// OpenAI Responses API
+// ---------------------------------------------------------------------------
+//
+// 会話は input 項目の配列（messages）で持つ。store:false で送り、サーバ側に会話を残さない。
+// 応答の output（reasoning / message / function_call）は、そのまま次の要求の input に戻す。
+// reasoning 項目は encrypted_content ごと戻すことで、store:false でも推論の続きが使われる
+// （include に "reasoning.encrypted_content"）。message の phase も項目ごと戻るので保たれる。
+
+/** MCP の結果 → function_call_output。画像は data URL の input_image にする。 */
+function toFunctionOutput(callId, result) {
+  const parts = [];
+  if (result.isError) parts.push({ type: "input_text", text: "ERROR: the tool reported an error." });
+  for (const c of result.content || []) {
+    switch (c.type) {
+      case "text":
+        if (c.text) parts.push({ type: "input_text", text: c.text });
+        break;
+      case "image":
+        parts.push({ type: "input_image", image_url: `data:${c.mimeType};base64,${c.data}` });
+        break;
+      case "resource":
+        if (typeof c.resource?.text === "string" && c.resource.text) {
+          parts.push({ type: "input_text", text: c.resource.text });
+        } else {
+          parts.push({ type: "input_text", text: `[resource ${c.resource?.uri ?? ""} ${c.resource?.mimeType ?? ""}（バイナリは渡していない）]` });
+        }
+        break;
+      default:
+        parts.push({ type: "input_text", text: JSON.stringify({ ...c, data: c.data ? `(${c.data.length} chars omitted)` : undefined }) });
+    }
+  }
+  if (parts.length === (result.isError ? 1 : 0) && result.structuredContent !== undefined) {
+    parts.push({ type: "input_text", text: JSON.stringify(result.structuredContent) });
+  }
+  return { type: "function_call_output", call_id: callId, output: parts.length > 0 ? parts : "(no content)" };
+}
+
+/**
+ * 履歴圧縮（OpenAI 版）。1 回のツール往復で返した function_call_output は連続して並ぶので、
+ * その連なりを 1 往復と数え、直近 keep 往復より古いものの本文を短い文に置き換えた写しを返す。
+ * call_id は残す（function_call との対応が崩れると API に拒否される）。
+ */
+function compactOpenAIItems(src, keep) {
+  const runs = [];
+  let inRun = false;
+  src.forEach((item, i) => {
+    const isOutput = item.type === "function_call_output";
+    if (isOutput && !inRun) runs.push([]);
+    if (isOutput) runs[runs.length - 1].push(i);
+    inRun = isOutput;
+  });
+  const cut = new Set(runs.slice(0, Math.max(0, runs.length - keep)).flat());
+  if (cut.size === 0) return src;
+
+  const names = new Map();
+  for (const item of src) if (item.type === "function_call") names.set(item.call_id, item.name);
+
+  return src.map((item, i) => !cut.has(i) ? item : {
+    type: "function_call_output",
+    call_id: item.call_id,
+    output: `[省略: ${names.get(item.call_id) ?? "tool"} の結果 ${utf8Bytes(JSON.stringify(item.output))} バイト]`
+  });
+}
+
+async function callOpenAI(signal) {
+  const keep = compactKeep();
+  const body = {
+    model: $("model").value.trim(),
+    input: keep === null ? messages : compactOpenAIItems(messages, keep),
+    max_output_tokens: Math.max(OPENAI_MIN_OUTPUT_TOKENS, Number($("maxTokens").value)),
+    store: false,
+    include: ["reasoning.encrypted_content"]
+  };
+  if (openaiTools.length > 0) body.tools = openaiTools;
+  if (serverInstructions) body.instructions = serverInstructions;
+
+  const payload = JSON.stringify(body);
+  lastRequestBytes = utf8Bytes(payload);
+
+  const response = await fetch(OPENAI_RESPONSES_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": "Bearer " + $("openaiKey").value.trim()
+    },
+    body: payload,
+    signal
+  });
+
+  const json = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = json?.error ? `${json.error.type ?? json.error.code ?? ""}: ${json.error.message}` : "(本文なし)";
+    throw new Error(`OpenAI API: HTTP ${response.status} ${detail}`);
+  }
+  if (json?.error) throw new Error(`OpenAI API: ${json.error.code ?? ""} ${json.error.message}`);
+  return json;
+}
+
+/** output の message 項目から、画面に出す文字列を取り出す。 */
+function openAIMessageTexts(item) {
+  const texts = [];
+  for (const c of item.content || []) {
+    if (c.type === "output_text" && c.text) texts.push(c.text);
+    else if (c.type === "refusal" && c.refusal) texts.push("[refusal] " + c.refusal);
+  }
+  return texts;
+}
+
+async function runTurnOpenAI(userText) {
+  const historyLength = messages.length;
+  abortController = new AbortController();
+  const signal = abortController.signal;
+  setBusy(true);
+
+  messages.push({ type: "message", role: "user", content: userText });
+  addMessage("user", userText);
+
+  try {
+    for (let round = 0; ; round++) {
+      if (round >= MAX_TOOL_ROUNDS) {
+        throw new Error(`ツール往復が上限 ${MAX_TOOL_ROUNDS} 回に達したので止めた`);
+      }
+
+      const reply = await callOpenAI(signal);
+      const output = reply.output || [];
+      const calls = output.filter(o => o.type === "function_call");
+      const incomplete = reply.status === "incomplete";
+      const stopReason = incomplete
+        ? `incomplete:${reply.incomplete_details?.reason ?? ""}`
+        : (calls.length > 0 ? "function_call" : (reply.status ?? ""));
+
+      // 打ち切られた応答の function_call は実行しないので数えない。
+      const roundRow = recordRound(reply, stopReason, incomplete ? 0 : calls.length);
+
+      for (const item of output) {
+        if (item.type === "message") for (const t of openAIMessageTexts(item)) addMessage("assistant", t);
+      }
+
+      if (incomplete || calls.length === 0) {
+        // 打ち切られた function_call は実行しない。対応する function_call_output が無いまま
+        // 履歴に残すと次の要求が API に拒否されるので、履歴からも外す。
+        messages.push(...output.filter(o => o.type !== "function_call"));
+        if (incomplete) addInfo(`status: incomplete（${reply.incomplete_details?.reason ?? "理由なし"}）`);
+        else if (reply.status && reply.status !== "completed") addInfo(`status: ${reply.status}`);
+        break;
+      }
+
+      messages.push(...output);
+
+      const results = [];
+      for (const call of calls) {
+        let args;
+        try {
+          args = call.arguments ? JSON.parse(call.arguments) : {};
+        } catch (e) {
+          const view = addToolCall(call.name, call.arguments);
+          const error = new Error(`arguments が JSON として読めない: ${e.message}`);
+          results.push({ type: "function_call_output", call_id: call.call_id, output: "ERROR: " + error.message });
+          fillToolResult(view, null, error);
+          continue;
+        }
+        const view = addToolCall(call.name, args);
+        try {
+          const result = await mcpCallTool(call.name, args, signal);
+          results.push(toFunctionOutput(call.call_id, result));
+          fillToolResult(view, result, null);
+        } catch (e) {
+          if (signal.aborted) throw e;
+          results.push({ type: "function_call_output", call_id: call.call_id, output: "ERROR: " + String(e.message || e) });
+          fillToolResult(view, null, e);
+        }
+      }
+      messages.push(...results);
+      addToolResultBytes(roundRow, utf8Bytes(JSON.stringify(results)));
+    }
+  } catch (e) {
+    // 途中で失敗した往復は履歴から外す。function_call と function_call_output の対応が崩れた履歴は
+    // 次の送信で API に拒否されるため。
+    messages.length = historyLength;
+    addError((signal.aborted ? "中止した" : String(e.message || e)) + "（この送信は会話履歴から外した）");
+  } finally {
+    abortController = null;
+    setBusy(false);
+  }
+}
+
+/** /v1/models（中継経由）でモデル名の候補を取る。 */
+async function loadOpenAIModels() {
+  const key = $("openaiKey").value.trim();
+  if (!key) { addError("OpenAI API キーが空"); return; }
+  const response = await fetch(OPENAI_MODELS_URL, { headers: { "authorization": "Bearer " + key } });
+  const json = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = json?.error ? json.error.message : "(本文なし)";
+    throw new Error(`OpenAI /v1/models: HTTP ${response.status} ${detail}`);
+  }
+  const ids = (json?.data || []).map(m => m.id).filter(id => typeof id === "string").sort();
+  $("openaiModels").replaceChildren(...ids.map(id => new Option("", id)));
+  addInfo(`OpenAI のモデル候補 ${ids.length} 件`);
+}
+
+/** API を切り替える。履歴の形が違うので会話を消す。 */
+function setProvider(next) {
+  if (next === provider) return;
+  modelByProvider[provider] = $("model").value.trim();
+  provider = next;
+  const openai = provider === "openai";
+  $("apiKeyLabel").hidden = openai;
+  $("openaiKeyLabel").hidden = !openai;
+  $("openaiModelsLoad").hidden = !openai;
+  $("model").setAttribute("list", openai ? "openaiModels" : "models");
+  $("model").value = modelByProvider[provider];
+  $("useCache").disabled = openai;
+  if (messages.length > 0) {
+    messages = [];
+    $("log").replaceChildren();
+    addInfo(`API を ${next} に切り替えたので会話を消した`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 画面
 // ---------------------------------------------------------------------------
@@ -798,7 +1108,7 @@ function addMessage(role, text) {
   div.className = "msg " + role;
   const r = document.createElement("div");
   r.className = "role";
-  r.textContent = role === "user" ? "you" : "claude";
+  r.textContent = role === "user" ? "you" : PROVIDER_LABEL[provider];
   div.append(r, document.createTextNode(text));
   $("log").append(div);
   div.scrollIntoView({ block: "end" });
@@ -863,6 +1173,8 @@ function setBusy(value) {
   $("clear").disabled = value;
   $("stop").disabled = !value;
   $("taskStart").disabled = value;
+  $("provider").disabled = value;
+  $("openaiModelsLoad").disabled = value;
   $("scene").disabled = value || !mcpTools.some(t => t.name === "polyling_scenes");
   $("sceneReload").disabled = $("scene").disabled;
   $("taskOk").disabled = value || !currentTask;
@@ -876,7 +1188,7 @@ $("connect").addEventListener("click", async () => {
     const { serverName, toolCount } = await mcpConnect();
     $("status").textContent = `接続済み: ${serverName} / ツール ${toolCount} 個 / MCP ${PROTOCOL_VERSION}`;
   } catch (e) {
-    mcpTools = []; anthropicTools = []; serverInstructions = ""; serverName = "";
+    mcpTools = []; anthropicTools = []; openaiTools = []; serverInstructions = ""; serverName = "";
     $("status").textContent = "未接続";
     addError("MCP 接続失敗: " + (e.message || e));
   } finally {
@@ -891,6 +1203,11 @@ $("clear").addEventListener("click", () => {
 
 $("stop").addEventListener("click", () => abortController?.abort());
 
+$("provider").addEventListener("change", e => { if (!busy) setProvider(e.target.value); else e.target.value = provider; });
+$("openaiModelsLoad").addEventListener("click", async () => {
+  try { await loadOpenAIModels(); } catch (e) { addError(String(e.message || e)); }
+});
+
 $("taskStart").addEventListener("click", startTask);
 $("taskOk").addEventListener("click", () => endTask("success"));
 $("taskNg").addEventListener("click", () => endTask("failure"));
@@ -904,8 +1221,10 @@ function send() {
   if (busy) return;
   const text = $("prompt").value.trim();
   if (!text) return;
-  if (!$("apiKey").value.trim()) { addError("API キーが空"); return; }
-  if (anthropicTools.length === 0) addInfo("MCP 未接続（ツール無し）で送信する");
+  const keyInput = provider === "openai" ? "openaiKey" : "apiKey";
+  if (!$(keyInput).value.trim()) { addError("API キーが空"); return; }
+  if (!$("model").value.trim()) { addError("モデルが空"); return; }
+  if (currentToolDefs().length === 0) addInfo("MCP 未接続（ツール無し）で送信する");
   $("prompt").value = "";
   runTurn(text);
 }

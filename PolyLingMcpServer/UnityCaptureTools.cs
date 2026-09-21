@@ -30,6 +30,13 @@ namespace PolyLingMcpServer;
 ///   600,000 バイトを超えたら断るだけで、縮めて送り直すことはしない。
 ///   このプロジェクトは画像ライブラリを参照しておらず、ImageBytes も
 ///   ヘッダを読むだけで復号はしない。縮小を入れるなら撮影側（uiCapture）の仕事。
+///
+/// 【保存先はサーバが決める】
+///   以前は folder を PolyLing の作業フォルダ基準で渡していたため、作業フォルダが
+///   プロジェクト直下だとそこへ画像が溜まった。保存先は --capture-folder
+///   （ServerState.CaptureFolder、既定 SandBox/Captures）に固定し、folder はそこからの相対にする。
+///   Unity へは絶対パスで渡す（PLSandbox は作業フォルダの中の絶対パスを受け付ける）。
+///   polyling_call / pl_uiCapture で folder を省いたときも同じ場所を補う（ApplyDefaultCaptureFolder）。
 /// </summary>
 [McpServerToolType]
 public static class UnityCaptureTools
@@ -55,10 +62,9 @@ public static class UnityCaptureTools
         [Description("What to photograph: MainView (the main 3D view), TriView (the viewport area including the three orthographic views), or Window (the whole window). "
                    + "Window is the only one that shows the panels, but it is also the one that exceeds the size limits first.")]
         string target = "MainView",
-        [Description("Destination folder, relative to the PolyLing work folder; '.' is the work folder itself, and missing folders are created. "
-                   + "It has to end up inside one of this server's roots, because that is all it may read. "
-                   + "An empty string means the folder set in the capture panel, which may well be somewhere else.")]
-        string folder = ".",
+        [Description("Sub-folder of this server's capture folder (set at startup, SandBox/Captures by default). "
+                   + "Empty means the capture folder itself; missing folders are created. Absolute paths and '..' are rejected.")]
+        string folder = "",
         [Description("Base of the file name. A serial number and .png are appended.")]
         string base_name = "PolyLingCapture",
         [Description("Bring the Unity window to the front before shooting. Leave this on unless the window is known to be in front already: "
@@ -83,6 +89,9 @@ public static class UnityCaptureTools
 
         if (timeout_ms < 1000) timeout_ms = 1000;
 
+        if (!TryResolveCaptureSubFolder(state, folder, out var captureFolder, out var folderError))
+            return McpContent.Error(folderError);
+
         var watch = Stopwatch.StartNew();
         var deadline = TimeSpan.FromMilliseconds(timeout_ms);
 
@@ -91,7 +100,7 @@ public static class UnityCaptureTools
         string focusDetail = "focus=skipped";
         if (focus)
         {
-            var focusResult = UnityWindowTools.UnityFocus(ui);
+            var focusResult = UnityWindowTools.UnityFocus(state, ui);
             focusDetail = focusResult.StartsWith("ERROR:", StringComparison.Ordinal)
                 ? "focus failed: " + focusResult
                 : "focus=ok";
@@ -105,7 +114,7 @@ public static class UnityCaptureTools
             ["modelIndex"] = UnusedModelIndex,
             ["target"]      = target,
             ["baseName"]    = base_name,
-            ["folder"]      = folder ?? "",
+            ["folder"]      = captureFolder,
             ["panelId"]     = panel_id ?? "",
             ["maxLongEdge"] = Math.Max(0, max_long_edge).ToString(),
             ["format"]      = string.IsNullOrWhiteSpace(format) ? "png" : format.Trim(),
@@ -207,6 +216,63 @@ public static class UnityCaptureTools
                  + (advice.Length > 0 ? "\n" + advice : string.Empty);
 
         return McpContent.TextWithImages(text, images);
+    }
+
+    /// <summary>PolyLing のコマンド名。polyling_call などの補完で見る。</summary>
+    private const string UiCaptureCommand = "uiCapture";
+
+    /// <summary>
+    /// uiCapture の folder が無い・空なら、キャプチャフォルダ（絶対パス）を入れる。
+    /// polyling_call と pl_uiCapture から呼ぶ。folder を明示した呼び出しには触らない。
+    /// </summary>
+    internal static void ApplyDefaultCaptureFolder(ServerState state, string command, IDictionary<string, string> parameters)
+    {
+        if (!string.Equals(command, UiCaptureCommand, StringComparison.Ordinal)) return;
+        if (string.IsNullOrEmpty(state.CaptureFolder)) return;
+        if (parameters.TryGetValue("folder", out var given) && !string.IsNullOrWhiteSpace(given)) return;
+
+        parameters["folder"] = state.CaptureFolder;
+    }
+
+    /// <summary>
+    /// unity_capture の folder（キャプチャフォルダからの相対）を絶対パスにする。
+    /// 絶対パスと、キャプチャフォルダの外へ出るものは拒否する。
+    /// </summary>
+    private static bool TryResolveCaptureSubFolder(ServerState state, string? folder, out string fullPath, out string error)
+    {
+        fullPath = string.Empty;
+        error    = string.Empty;
+
+        var root = state.CaptureFolder;
+        if (string.IsNullOrEmpty(root))
+        {
+            error = "no capture folder is configured (--capture-folder).";
+            return false;
+        }
+
+        var sub = (folder ?? string.Empty).Trim();
+        if (sub.Length == 0 || sub == ".")
+        {
+            fullPath = root;
+            return true;
+        }
+
+        if (Path.IsPathRooted(sub))
+        {
+            error = $"folder must be relative to the capture folder {root}: {sub}";
+            return false;
+        }
+
+        var full = Path.GetFullPath(Path.Combine(root, sub));
+        var rootWithSep = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!full.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase))
+        {
+            error = $"folder leaves the capture folder {root}: {sub}";
+            return false;
+        }
+
+        fullPath = full;
+        return true;
     }
 
     /// <summary>全体の期限から、この 1 往復に許す時間を決める。</summary>

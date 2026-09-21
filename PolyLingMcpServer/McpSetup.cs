@@ -37,11 +37,12 @@ public static class McpSetup
         return services
             .AddMcpServer(options =>
             {
-                options.ServerInstructions = ProfileRules.Instructions(state.Profile);
+                options.ServerInstructions = ProfileRules.Instructions(state.Profile)
+                                           + TargetRules.InstructionsSuffix(state.Target);
                 options.ServerInfo = new Implementation
                 {
                     Name    = "PolyLingMcpServer",
-                    Version = $"{AssemblyVersion()} profile={ProfileRules.Name(state.Profile)}"
+                    Version = $"{AssemblyVersion()} profile={ProfileRules.Name(state.Profile)} target={TargetRules.Name(state.Target)}"
                 };
             })
             .WithListToolsHandler(GenericCommandTools.ListAsync)
@@ -98,6 +99,7 @@ public static class McpSetup
             }
 
             if (!ProfileRules.IsFixedToolVisible(state.Profile, tool.Name)) continue;
+            if (!TargetRules.IsFixedToolVisible(state.Target, tool.Name)) continue;
             if (scene is not null && !ProfileRules.IsVisibleInScene(tool.Name, scene.Tools)) continue;
 
             var description = ProfileRules.DescriptionOverride(state.Profile, tool.Name);
@@ -195,7 +197,8 @@ public static class McpSetup
         bool isGeneric = name.StartsWith(ProfileRules.GenericToolPrefix, StringComparison.Ordinal);
         bool visible = isGeneric
             ? state.Profile == ServerProfile.Generic
-            : ProfileRules.IsFixedToolVisible(state.Profile, name);
+            : ProfileRules.IsFixedToolVisible(state.Profile, name)
+              && TargetRules.IsFixedToolVisible(state.Target, name);
 
         string sceneName = SceneFor(state, request.Params?.Meta);
         if (visible && !isGeneric && SceneCatalog.TryGetCached(sceneName) is { } scene)

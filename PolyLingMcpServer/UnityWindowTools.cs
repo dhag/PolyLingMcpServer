@@ -38,9 +38,6 @@ namespace PolyLingMcpServer;
 [McpServerToolType]
 public static class UnityWindowTools
 {
-    /// <summary>Unity Editor の実行ファイル名から拡張子を除いたもの。</summary>
-    private const string UnityProcessName = "Unity";
-
     /// <summary>ShowWindow の SW_RESTORE。最小化・最大化を解いて元の大きさに戻す。</summary>
     private const int SW_RESTORE = 9;
 
@@ -120,11 +117,17 @@ public static class UnityWindowTools
                                           uint dwFlags, out uint pdwType, out uint pvData, ref uint pcbData);
 
     [McpServerTool(Name = "unity_focus", Destructive = false),
-     Description("Brings the Unity Editor main window to the front. This runs inside the MCP server process and does not talk to the Editor, "
+     Description("Brings the Unity Editor main window to the front (with --target player, the built PolyLing player's window). "
+               + "This runs inside the MCP server process and does not talk to Unity, "
                + "so unlike unity_state it also works while the Editor is compiling or importing assets. Windows only.")]
-    public static string UnityFocus(UiDispatcher ui)
+    public static string UnityFocus(ServerState state, UiDispatcher ui)
     {
         ui.Log("unity_focus");
+
+        // 探すプロセス名。editor は "Unity"、player は --player-exe（ServerState.FocusProcessName）。
+        string processName = state.FocusProcessName;
+        if (string.IsNullOrWhiteSpace(processName))
+            return "ERROR: no process name to bring to the front. Start the server with --player-exe <process name> when --target player is used.";
 
         if (!OperatingSystem.IsWindows())
             return "ERROR: unity_focus works on Windows only.";
@@ -132,7 +135,7 @@ public static class UnityWindowTools
         Process[] processes;
         try
         {
-            processes = Process.GetProcessesByName(UnityProcessName);
+            processes = Process.GetProcessesByName(processName);
         }
         catch (Exception ex)
         {
@@ -165,12 +168,12 @@ public static class UnityWindowTools
             }
 
             if (candidates.Count == 0)
-                return $"ERROR: no '{UnityProcessName}' process with a main window was found. Is the Unity Editor running?";
+                return $"ERROR: no '{processName}' process with a main window was found. Is it running?";
 
             if (candidates.Count > 1)
             {
                 var list = new StringBuilder();
-                list.Append($"ERROR: {candidates.Count} '{UnityProcessName}' windows are open, so the target is ambiguous.");
+                list.Append($"ERROR: {candidates.Count} '{processName}' windows are open, so the target is ambiguous.");
 
                 foreach (var candidate in candidates)
                     list.Append($"\n  pid={candidate.Pid}; title=\"{candidate.Title}\"");
@@ -206,7 +209,7 @@ public static class UnityWindowTools
                        + $"; lock_timeout_registry={ReadStoredForegroundLockTimeout()}";
 
             if (inFront)
-                return $"OK: the Unity Editor window is in the foreground. {detail}";
+                return $"OK: the '{processName}' window is in the foreground. {detail}";
 
             if (accepted)
                 return $"OK: SetForegroundWindow was accepted, but another window is in front right now. {detail}";
