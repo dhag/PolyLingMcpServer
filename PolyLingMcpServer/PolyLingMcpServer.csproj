@@ -36,7 +36,7 @@
   <!-- HTTP モード（起動引数 http）で / に返すブラウザ用クライアント。exe に埋め込むので、
        起動時のカレントフォルダに関係なく返せる。LogicalName は Program.WebClientResourceName と一致させる。 -->
   <ItemGroup>
-    <EmbeddedResource Include="WebClient\index.html" LogicalName="PolyLingMcpServer.WebClient.index.html" />
+    <EmbeddedResource Include="WebClient\MCP_Client.html" LogicalName="PolyLingMcpServer.WebClient.MCP_Client.html" />
   </ItemGroup>
 
   <ItemGroup>

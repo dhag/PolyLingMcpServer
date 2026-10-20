@@ -48,6 +48,11 @@ public sealed class ServerState
     /// </summary>
     public string UnityLogPath { get; set; } = string.Empty;
 
+    /// <summary>
+    /// unity_editor_launch が最初に試す Unity.exe（--unity-editor）。空なら Unity Hub の置き場から探す。
+    /// </summary>
+    public string UnityEditorPath { get; set; } = string.Empty;
+
     public CompileResult? LastCompileResult { get; private set; }
 
     /// <summary>接続先（--target）。起動中は変わらない。</summary>

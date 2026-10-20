@@ -16,9 +16,16 @@ namespace PolyLingMcpServer;
 /// </summary>
 public static class PathGuard
 {
-    /// <summary>write_file / apply_patch が書ける拡張子。</summary>
+    /// <summary>
+    /// write_file / apply_patch が書ける拡張子。
+    /// .csv / .mqo はテキスト形式なので確認用のファイルを置けるよう加えた
+    /// （write_file は UTF-8 で書く。MQO を日本語入りで書くときは write_binary で Shift_JIS のバイト列を渡す）。
+    /// .html / .js はモーションスタジオ（データとツール/VRMビュワー/polyling_motion_studio）の編集用。
+    /// .unity はシーン内 GameObject のアクティブ等を直すため（YAML テキスト。Unity で開いているシーンは
+    /// 書き換え後にエディタ側で再読込が要る）。
+    /// </summary>
     private static readonly string[] TextWritableExtensions =
-        [".cs", ".asmdef", ".asmref", ".json", ".txt", ".md"];
+        [".cs", ".asmdef", ".asmref", ".json", ".txt", ".md", ".doc", ".compute", ".csv", ".mqo", ".html", ".js", ".py", ".unity"];
 
     /// <summary>
     /// write_binary が書ける拡張子。テキスト用に加えて、PolyLing 自身が書く形式
@@ -31,8 +38,8 @@ public static class PathGuard
     private static readonly string[] BinaryWritableExtensions =
     [
         ".cs", ".asmdef", ".asmref", ".json", ".txt", ".md",
-        ".csv", ".pmx", ".mqo", ".obj", ".vrm", ".vrma", ".plrf", ".mfproj",
-        ".png", ".jpg", ".jpeg",
+        ".csv", ".pmx", ".mqo", ".obj", ".stl", ".vrm", ".vrma", ".vmd", ".plrf", ".mfproj",
+        ".png", ".jpg", ".jpeg", ".html", ".py", ".unity",
     ];
 
     // ================================================================

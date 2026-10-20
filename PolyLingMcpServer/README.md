@@ -34,13 +34,21 @@ PolyLingMcpServer.exe --project <unity-project-folder> [--editable <folder>] ...
   Unity is started with `-logFile`.
 - `--http` switches from stdio to Streamable HTTP on `127.0.0.1:<port>`. A value that is not
   a port number 1-65535 stops startup.
+- `--guide <folder>` is the AI guide data (`primer.md`, `hints.txt`). Default
+  `<project>/Packages/com.haglib.polyling/McpGuide`. `primer.md` is appended to the first tool
+  result of each session (and to the initialize instructions); each rule in `hints.txt`
+  (tab-separated: id, tool regex, argument regex, doc that suppresses it once read, message) is
+  appended once per session when a call matches. Tool results are used because some clients
+  (Claude via remote-devices, 2026-09-30) do not pass instructions to the model. The files are
+  re-read when they change, so editing them needs no rebuild or restart. See `GuideRules.cs`.
 - `--target editor|player` chooses what the server talks to. `editor` (default) is the Unity
   Editor on port 8770. `player` is a built PolyLing player on port 8772
   (`PolyLingPlayerControlServer`). With `player`, `--project` may be omitted, and the tools a
   build cannot serve are hidden: source read/write/search, `read_binary` / `write_binary` /
   `delete_path`, `compile` / `get_compile_errors`, `unity_play` / `unity_stop` /
   `unity_refresh` / `unity_recompile`, `unity_validate_changes` and `read_unity_log`.
-  `unity_prefab_export` / `unity_prefab_instantiate` / `unity_prefab_import` stay visible and
+  `unity_prefab_export` / `unity_prefab_instantiate` / `unity_prefab_import` /
+  `unity_prefab_add_component` stay visible and
   always go to the Editor on 8770, so files made in a build can still become prefabs while the
   Editor is open. `sendHierarchyBundle` (through `polyling_call`) also works from a build.
 - `--capture-folder` is where `unity_capture` saves, and the folder filled in when `uiCapture`
@@ -311,8 +319,8 @@ embedded image makes that line hundreds of thousands of characters long.
 
 | Tool | Allowed |
 |---|---|
-| `write_file`, `apply_patch` | `.cs` `.asmdef` `.asmref` `.json` `.txt` `.md` |
-| `write_binary` | the above plus `.csv` `.pmx` `.mqo` `.obj` `.vrm` `.vrma` `.plrf` `.mfproj` `.png` `.jpg` `.jpeg` |
+| `write_file`, `apply_patch` | `.cs` `.asmdef` `.asmref` `.json` `.txt` `.md` `.compute` |
+| `write_binary` | `.cs` `.asmdef` `.asmref` `.json` `.txt` `.md` plus `.csv` `.pmx` `.mqo` `.obj` `.vrm` `.vrma` `.plrf` `.mfproj` `.png` `.jpg` `.jpeg` |
 | `delete_path` | any — see below |
 
 Executable formats (`.dll`, `.exe`) are on neither write list. The `write_binary` set

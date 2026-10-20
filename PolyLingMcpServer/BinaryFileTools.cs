@@ -55,7 +55,7 @@ public static class BinaryFileTools
             if (!File.Exists(fullPath))
                 return $"ERROR: File not found: {path}";
 
-            using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 
             long size = stream.Length;
             if (offset > size)

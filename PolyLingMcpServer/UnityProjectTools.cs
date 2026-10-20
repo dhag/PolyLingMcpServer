@@ -98,7 +98,7 @@ public static class UnityProjectTools
             if (info.Length > maxBytes)
                 return $"ERROR: File is too large ({info.Length} bytes). Limit is {maxBytes} bytes.";
 
-            return await File.ReadAllTextAsync(fullPath, fileEncoding, cancellationToken);
+            return await SharedFileRead.ReadAllTextAsync(fullPath, fileEncoding, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -801,7 +801,7 @@ public static class UnityProjectTools
 
     /// <summary>Unity に取り込ませ直す必要がある拡張子。apply_patch の報告に使う。</summary>
     private static readonly HashSet<string> UnityAssetExtensions =
-        new(StringComparer.OrdinalIgnoreCase) { ".cs", ".asmdef", ".asmref", ".shader", ".uxml", ".uss", ".json" };
+        new(StringComparer.OrdinalIgnoreCase) { ".cs", ".asmdef", ".asmref", ".shader", ".compute", ".uxml", ".uss", ".json", ".unity" };
 
     /// <summary>変更後の中身のハッシュ。SHA-256 の先頭 16 桁（小文字 16 進）。</summary>
     private static string ShortHash(string text)

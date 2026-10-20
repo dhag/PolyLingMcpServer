@@ -37,8 +37,12 @@ public static class McpSetup
         return services
             .AddMcpServer(options =>
             {
+                // 入門（GuideRules）も載せる。instructions が AI まで届くクライアント向け。
+                // 届かないクライアントには、最初の道具応答に同じものを添える（CallFilter）。
+                var primer = GuideRules.PrimerText();
                 options.ServerInstructions = ProfileRules.Instructions(state.Profile)
-                                           + TargetRules.InstructionsSuffix(state.Target);
+                                           + TargetRules.InstructionsSuffix(state.Target)
+                                           + (primer.Length > 0 ? "\n\n" + primer : string.Empty);
                 options.ServerInfo = new Implementation
                 {
                     Name    = "PolyLingMcpServer",
@@ -235,6 +239,10 @@ public static class McpSetup
             if (state.MetricsSearch && visible && name == "polyling_search")
                 metrics.Write(BuildSearchRecord(state, request, result, sceneName));
         }
+
+        // AI への案内（入門・きっかけ）を末尾に添える。計測の後に足すので、計測値は道具本体の量のまま。
+        if (visible)
+            GuideRules.Decorate(request.Server?.SessionId ?? string.Empty, name, request.Params?.Arguments, result);
 
         return result;
     }

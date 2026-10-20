@@ -19,7 +19,7 @@ public enum ServerTarget
 ///   ソースの読み書き・検索、コンパイル、Play 制御、Editor.log を読む道具は隠す。
 ///
 /// 【player でも見せる Editor 向けの道具】
-///   unity_prefab_export / instantiate / import は Editor（8770）へ直接送る
+///   unity_prefab_export / instantiate / import / add_component は Editor（8770）へ直接送る
 ///   （UnityPrefabTools）。ビルド版で作ったファイルを Editor 拡張でプレファブにできるため。
 /// </summary>
 public static class TargetRules
@@ -43,6 +43,7 @@ public static class TargetRules
         "unity_refresh",
         "unity_recompile",
         "unity_validate_changes",
+        "unity_editor_launch",
         "read_unity_log"
     };
 
@@ -71,6 +72,6 @@ public static class TargetRules
     public static string InstructionsSuffix(ServerTarget target) => target == ServerTarget.Player
         ? " This server is connected to a built PolyLing player, not the Unity Editor: "
           + "source files, compiling and Play mode control are unavailable. "
-          + "unity_prefab_export / unity_prefab_instantiate / unity_prefab_import still go to the Unity Editor if it is open."
+          + "unity_prefab_export / unity_prefab_instantiate / unity_prefab_import / unity_prefab_add_component still go to the Unity Editor if it is open."
         : string.Empty;
 }

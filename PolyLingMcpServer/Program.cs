@@ -15,14 +15,14 @@ internal static class Program
     // 起動方法は 2 つ。
     //   既定      : Claude Desktop が子プロセスとして起動し、stdin/stdout で話す（stdio）。
     //   --http <port> : 127.0.0.1:<port> で Streamable HTTP を待ち受け、
-    //                   同じポートの / でブラウザ用クライアント（WebClient/index.html）を返す。
+    //                   同じポートの / でブラウザ用クライアント（WebClient/MCP_Client.html）を返す。
     // Unknown arguments, including a legacy --stdio, are ignored by the option parsers below.
     static int Main(string[] args) => Run(args).GetAwaiter().GetResult();
 
     /// <summary>ブラウザ用クライアントの埋め込みリソース名。csproj の LogicalName と一致させる。</summary>
-    private const string WebClientResourceName = "PolyLingMcpServer.WebClient.index.html";
+    private const string WebClientResourceName = "PolyLingMcpServer.WebClient.MCP_Client.html";
 
-    /// <summary>HTTP モードの MCP エンドポイント。WebClient/index.html の MCP_ENDPOINT と一致させる。</summary>
+    /// <summary>HTTP モードの MCP エンドポイント。WebClient/MCP_Client.html の MCP_ENDPOINT と一致させる。</summary>
     private const string McpEndpointPath = "/mcp";
 
     private static async Task<int> Run(string[] args)
@@ -96,11 +96,15 @@ internal static class Program
                 + "             Project-relative, @<name>[/sub], or absolute. Default " + DefaultCaptureFolder + ".\n"
                 + "             With --target player and no --project it must be absolute, and it is the only folder read_image can read.\n"
                 + "  --player-exe  process name (without .exe) that unity_focus brings to the front when --target player.\n"
+                + "  --guide    folder of the AI guide data (primer.md, hints.tsv) added to tool results.\n"
+                + "             Default <project>/Packages/com.haglib.polyling/McpGuide. Re-read when the files change.\n"
                 + "  --editable may be repeated, or given once as a ';'-separated list.\n"
                 + "             Each item is a project-relative folder, or @<name>[/sub] for a --root folder.\n"
                 + "  --root     adds a readable folder outside the project, addressed as @<name>/path.\n"
                 + "             May be repeated. Example: --root settings=C:\\Users\\me\\AppData\\LocalLow\\Vendor\n"
                 + "  --unity-log defaults to %LOCALAPPDATA%\\Unity\\Editor\\Editor.log.\n"
+                + "  --unity-editor  Unity.exe that unity_editor_launch tries first. Without it, the version in\n"
+                + "             ProjectSettings/ProjectVersion.txt is looked up in the Unity Hub install folders.\n"
                 + "  --http     serves Streamable HTTP on 127.0.0.1:<port>" + McpEndpointPath + " and the browser client on /.\n"
                 + "             It also relays /openai/v1/responses and /openai/v1/models to api.openai.com for the browser client.\n"
                 + "             Without it the server talks over stdin/stdout.\n"
@@ -179,7 +183,8 @@ internal static class Program
             ProjectRoot = projectUsable ? Path.GetFullPath(projectRoot!) : string.Empty,
             ExtraRoots = extraRoots,
             EditableFolders = editableFolders,
-            UnityLogPath = Path.GetFullPath(unityLogPath)
+            UnityLogPath = Path.GetFullPath(unityLogPath),
+            UnityEditorPath = (GetOption(args, "--unity-editor") ?? string.Empty).Trim()
         };
 
         // player で --project が無いときは書き込み先を持たない（書く道具は TargetRules で隠れる）。
@@ -229,9 +234,20 @@ internal static class Program
         // 起動時に一度だけ出す。どこまで届くのかを stderr のログで確かめられるようにする。
         await Console.Error.WriteLineAsync($"target: {TargetRules.Name(state.Target)} ({EditorControlClient.Endpoint})");
         await Console.Error.WriteLineAsync($"capture folder: {state.CaptureFolder}");
+
+        // AI への案内データ（GuideRules）。--guide で変えられる。無ければプロジェクトの既定の置き場。
+        // フォルダが無くても止めない（案内が出ないだけ）。
+        var guideOption = GetOption(args, "--guide");
+        GuideRules.GuideFolder = !string.IsNullOrWhiteSpace(guideOption)
+            ? Path.GetFullPath(guideOption)
+            : GuideRules.DefaultFolder(state.ProjectRoot);
+        await Console.Error.WriteLineAsync(
+            $"guide folder: {(GuideRules.GuideFolder.Length == 0 ? "(none)" : GuideRules.GuideFolder)}"
+            + (GuideRules.GuideFolder.Length > 0 && !Directory.Exists(GuideRules.GuideFolder) ? " (missing)" : ""));
         await Console.Error.WriteLineAsync($"roots: {state.RootsDisplay}");
         await Console.Error.WriteLineAsync($"editable: {state.EditableFoldersDisplay}");
         await Console.Error.WriteLineAsync($"unity log: {state.UnityLogPath}");
+        await Console.Error.WriteLineAsync($"unity editor: {(state.UnityEditorPath.Length == 0 ? "(Unity Hub lookup)" : state.UnityEditorPath)}");
         await Console.Error.WriteLineAsync($"profile: {ProfileRules.Name(state.Profile)}");
         await Console.Error.WriteLineAsync($"metrics: {state.Metrics?.FullPath ?? "(off)"}"
             + (state.Metrics != null && state.MetricsSearch ? " (+search queries)" : ""));

@@ -1,24 +1,36 @@
+(1)ターミナルを開く。
+
+(2)下記をコピペで実行
 cd D:\UNITY保存の品\TEO3.0開発中\PolyLing\データとツール\PolyLingMcpServer
 
+(3)サーバーを起動する。UnityEditor用かランタイムビルド用で異なる
 
 UnityEditor用
-.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771
+.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771
 
 
 ランタイムビルド用
-.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --target player --player-exe PolyLing
+.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --target player --player-exe PolyLing
 
 
-ブラウザでは下記から
+(3)ブラウザは下記に飛ぶ
 http://127.0.0.1:8771/
 
 
 
+ユニティエディタ用評価用A　　　　　　　MCPで自動生成\E
+
+.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe  --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --profile generic --metrics データとツール\MCPで自動生成\E\generic.jsonl
+
+ユニティエディタ用評価用C　　　　　　　MCPで自動生成\E
+
+.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe  --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --profile optimized --metrics データとツール\MCPで自動生成\E\optimized.jsonl
 
 
 
-
+---------------------------------------------------
 クロードデスクトップのパラメータ
+
 UnityEditor用
 
  "mcpServers": {
@@ -30,7 +42,7 @@ UnityEditor用
         "--root",
         "settings=C:\\Users\\dhag\\AppData\\LocalLow\\HagiharaLab",
         "--editable",
-        "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;@settings"
+        "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;Assets;@settings"
       ]
     }
   },
@@ -48,7 +60,7 @@ UnityEditor用
         "--root",
         "settings=C:\\Users\\dhag\\AppData\\LocalLow\\HagiharaLab",
         "--editable",
-        "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;@settings"
+        "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;Assets;@settings"
 ,
     "--target", "player",
     "--player-exe", "PolyLing"

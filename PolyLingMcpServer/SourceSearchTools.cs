@@ -191,7 +191,7 @@ public static class SourceSearchTools
 
             try
             {
-                foreach (var line in File.ReadLines(file, fileEncoding))
+                foreach (var line in SharedFileRead.ReadLines(file, fileEncoding))
                 {
                     lineNumber++;
 
@@ -289,7 +289,7 @@ public static class SourceSearchTools
             int count = 0;
             try
             {
-                foreach (var line in File.ReadLines(file, fileEncoding))
+                foreach (var line in SharedFileRead.ReadLines(file, fileEncoding))
                 {
                     bool hit = matcher != null ? matcher.IsMatch(line) : line.Contains(query, comparison);
                     if (hit) count++;
@@ -368,7 +368,7 @@ public static class SourceSearchTools
             if (info.Length > MaxReadFileBytes)
                 return $"ERROR: File is too large ({info.Length} bytes). Limit is {MaxReadFileBytes} bytes.";
 
-            text = File.ReadAllText(fullPath, fileEncoding);
+            text = SharedFileRead.ReadAllText(fullPath, fileEncoding);
             relative = PathGuard.ToDisplayPath(state, fullPath);
         }
         catch (Exception ex)

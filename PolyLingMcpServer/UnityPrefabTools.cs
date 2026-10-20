@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 namespace PolyLingMcpServer;
 
 /// <summary>
-/// Unity Editor のプレファブ操作（書き出し・ヒエラルキーへの登録・取り込み）。
+/// Unity Editor のプレファブ操作（書き出し・ヒエラルキーへの登録・取り込み・コンポーネントの付与）。
 ///
 /// 【Play 中なら先に止める】
 ///   Editor 側（PolyLingEditorControlServer の prefab_*）は Play 中の要求を拒否する。
@@ -24,7 +24,7 @@ namespace PolyLingMcpServer;
 /// 【接続先は常に Editor】
 ///   --target player でも EditorControlClient.SendToEditorAsync で Editor（8770）へ送る。
 ///   ビルド版で作ったファイルを Editor 拡張でプレファブにする使い方があるため、
-///   player のときもこの 3 つは隠さない（ServerTarget.cs）。
+///   player のときもこの 4 つは隠さない（ServerTarget.cs）。
 /// </summary>
 [McpServerToolType]
 public static class UnityPrefabTools
@@ -133,6 +133,33 @@ public static class UnityPrefabTools
         return RunInEditMode("prefab_import", p, ui, timeout_ms, cancellationToken);
     }
 
+    [McpServerTool(Name = "unity_prefab_add_component", Destructive = true),
+     Description("Adds a component to an object in a prefab asset and saves the prefab (PrefabUtility.LoadPrefabContents → AddComponent → SaveAsPrefabAsset). "
+               + "Use this instead of editing .prefab or .meta files, which the file tools cannot write. "
+               + "If the same component type is already there, nothing changes unless allow_multiple is true. "
+               + "A script written just now is not a type until it is compiled: run unity_validate_changes first. "
+               + "If the Editor is in Play mode it is stopped first.")]
+    public static Task<string> UnityPrefabAddComponent(
+        UiDispatcher ui,
+        [Description("Prefab asset path under Assets/, for example Assets/MyModel/MyModel.prefab.")] string prefab_path,
+        [Description("Component type: full name (Namespace.Type) or short name (Type). Ambiguous short names fail with the candidates listed.")] string component_type,
+        [Description("Optional object inside the prefab as 'Child/Grandchild', relative to the prefab root (do not include the root's name). Empty means the root. A bare name without '/' that is not a direct path is looked up among all descendants; it must be unique.")] string? object_path = null,
+        [Description("Add another one even if the type is already on the object. Default false.")] bool? allow_multiple = null,
+        [Description("How long to wait for the whole thing, including stopping Play mode, in milliseconds.")] int timeout_ms = 60_000,
+        CancellationToken cancellationToken = default)
+    {
+        var p = new Dictionary<string, string>
+        {
+            ["prefabPath"]    = prefab_path ?? "",
+            ["componentType"] = component_type ?? "",
+        };
+
+        AddString(p, "objectPath",    object_path);
+        AddBool  (p, "allowMultiple", allow_multiple);
+
+        return RunInEditMode("prefab_add_component", p, ui, timeout_ms, cancellationToken);
+    }
+
     private static void AddString(Dictionary<string, string> p, string key, string? value)
     {
         if (!string.IsNullOrWhiteSpace(value)) p[key] = value;
@@ -147,7 +174,7 @@ public static class UnityPrefabTools
     /// Edit モードで待機状態にしてから action を送る。
     /// Play 中なら stop を送る。
     /// </summary>
-    private static async Task<string> RunInEditMode(
+    internal static async Task<string> RunInEditMode(
         string action,
         Dictionary<string, string> parameters,
         UiDispatcher ui,
