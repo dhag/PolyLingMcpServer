@@ -269,8 +269,14 @@ public static class McpSetup
                 using var doc = JsonDocument.Parse(text);
                 if (doc.RootElement.TryGetProperty("matches", out var matches) && matches.ValueKind == JsonValueKind.Array)
                     foreach (var m in matches.EnumerateArray())
+                    {
+                        // 候補にはシナリオも混ざる（kind=scenario）。集計は次に実行したコマンドと
+                        // 突き合わせるので、コマンドの候補だけを記録する。
+                        if (m.TryGetProperty("kind", out var k) && k.ValueKind == JsonValueKind.String
+                            && k.GetString() == "scenario") continue;
                         if (m.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String)
                             names.Add(n.GetString() ?? "");
+                    }
             }
             catch (JsonException) { /* 結果が JSON でなければ候補なしとして残す */ }
         }

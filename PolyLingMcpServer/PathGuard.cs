@@ -38,7 +38,7 @@ public static class PathGuard
     private static readonly string[] BinaryWritableExtensions =
     [
         ".cs", ".asmdef", ".asmref", ".json", ".txt", ".md",
-        ".csv", ".pmx", ".mqo", ".obj", ".stl", ".vrm", ".vrma", ".vmd", ".plrf", ".mfproj",
+        ".csv", ".pmx", ".mqo", ".obj", ".stl", ".vrm", ".vrma", ".vmd", ".fbx", ".plrf", ".mfproj",
         ".png", ".jpg", ".jpeg", ".html", ".py", ".unity",
     ];
 
