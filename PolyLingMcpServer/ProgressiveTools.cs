@@ -77,7 +77,9 @@ public static class ProgressiveTools
     [McpServerTool(Name = "polyling_describe", ReadOnly = true),
      Description("Returns the full argument (input) and result (output) JSON Schema of the named PolyLing commands, "
                + "with their write scope, and the contents of the named scenarios (goal, preconditions, success criteria, "
+               + "declared parameters (paramNames / paramDefaults / paramDescriptions), "
                + "and each item's kind, command, purpose and argument names, the same as the describeScenario command). "
+               + "A scenario's parameters are passed to runScenario as paramKeys / paramValues; omitted ones use their defaults. "
                + "Scenario argument values are left out by default (detail=outline) because they can hold long data such as vertex coordinates; "
                + "running a scenario with runScenario does not need them. To edit items, use detail=full with items set to the item IDs you need. "
                + "Use the names returned by polyling_search: kind \"command\" goes in commands, kind \"scenario\" in scenarios. "

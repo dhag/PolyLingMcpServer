@@ -177,7 +177,8 @@ public static class ProfileRules
             + "Find candidate commands with polyling_search, read the argument schema of the chosen ones with polyling_describe, "
             + "then call polyling_call. polyling_tools returns every schema at once and is for diagnostics only. "
             + "polyling_search also finds scenarios (saved multi-step procedures, kind \"scenario\") in the same ranked list; "
-            + "read one with polyling_describe (scenarios) and run it with polyling_call runScenario. "
+            + "read one with polyling_describe (scenarios) and run it with polyling_call runScenario, "
+            + "passing its declared parameters (paramNames) as paramKeys / paramValues instead of editing or copying the scenario. "
             + "A usage scene (利用シーン) is a named preset for one phase of modeling work, such as skinning or morph editing. It sits between a scenario (a whole procedure) and a single command. It is not a Unity scene. "
             + "polyling_scenes lists the usage scenes; pass one as scene to polyling_search to search only the commands it covers. "
             + "After editing scripts, check them with unity_validate_changes (it refreshes Unity and returns only the new errors).",
