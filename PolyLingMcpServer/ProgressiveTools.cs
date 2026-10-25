@@ -21,24 +21,27 @@ namespace PolyLingMcpServer;
 public static class ProgressiveTools
 {
     [McpServerTool(Name = "polyling_search", ReadOnly = true),
-     Description("Finds PolyLing commands and scenarios (saved multi-step procedures) for a purpose and returns only their names and one-line summaries. "
-               + "Commands and scenarios come back in one ranked list; each match has kind \"command\" or \"scenario\", "
+     Description("Finds PolyLing commands, scenarios (saved multi-step procedures) and Python add-ons for a purpose and returns only their names and one-line summaries. "
+               + "Commands, scenarios and add-ons come back in one ranked list; each match has kind \"command\", \"scenario\" or \"addon\", "
                + "and offset / limit / total / hasMore apply to the whole list. "
                + "Commands match on name, description, category, tags and argument descriptions; scenarios on name, goal, tags, "
-               + "preconditions, success criteria and the commands and purposes of their items. Japanese queries work. "
-               + "Pass the chosen command names as commands, and scenario names as scenarios, to polyling_describe. "
+               + "preconditions, success criteria and the commands and purposes of their items; add-ons on id, title, description "
+               + "and the names and labels of their arguments and outputs. Japanese queries work. "
+               + "Pass the chosen command names as commands, scenario names as scenarios, and add-on names (ids) as addons, to polyling_describe. "
                + "An empty query lists everything by name, page by page. Requires the PolyLing panel to be open.")]
     public static Task<string> PolyLingSearch(
         UiDispatcher ui,
         [Description("What you want to do, in words, for example '選択した辺から板を作る' or 'mirror bones'. Empty lists everything.")] string query = "",
-        [Description("Optional: \"command\" returns only commands, \"scenario\" only scenarios. Empty returns both.")] string kind = "",
+        [Description("Optional: \"command\" returns only commands, \"scenario\" only scenarios, \"addon\" only Python add-ons. Empty returns all three. "
+                   + "\"addon\" cannot be combined with category, folder or scene.")] string kind = "",
         [Description("Optional command category to restrict the search to. Categories are hierarchical: \"geometry\" also matches \"geometry.topology\". "
-                   + "Scenarios are left out when this is set.")] string category = "",
+                   + "Scenarios and add-ons are left out when this is set.")] string category = "",
         [Description("Optional scenario folder to restrict the search to. Folders are hierarchical: \"a\" also matches \"a/b\". "
-                   + "Commands are left out when this is set.")] string folder = "",
+                   + "Commands and add-ons are left out when this is set.")] string folder = "",
         [Description("Optional usage scene (利用シーン) name from polyling_scenes. Only the commands that scene covers are searched, "
                    + "its tags raise matching commands in the ranking, commands whose hazards it hides are left out, and matches it "
                    + "warns about carry a policy field. Scenarios are limited to those whose items belong to the scene or that the scene lists as related. "
+                   + "Add-ons are left out when this is set. "
                    + "The result warns when the model state differs from what the scene assumes. Not a Unity scene.")] string scene = "",
         [Description("Number of matches to skip, for paging.")] int offset = 0,
         [Description("Maximum number of matches to return. 1 to 50.")] int limit = 8,
@@ -82,12 +85,16 @@ public static class ProgressiveTools
                + "A scenario's parameters are passed to runScenario as paramKeys / paramValues; omitted ones use their defaults. "
                + "Scenario argument values are left out by default (detail=outline) because they can hold long data such as vertex coordinates; "
                + "running a scenario with runScenario does not need them. To edit items, use detail=full with items set to the item IDs you need. "
-               + "Use the names returned by polyling_search: kind \"command\" goes in commands, kind \"scenario\" in scenarios. "
-               + "At most 10 names per call, commands and scenarios together. Requires the PolyLing panel to be open.")]
+               + "For the named Python add-ons it returns name, title, description, official, state, hasSpec, args, outputs and invoke "
+               + "(how to run it: polyling_call invokePyAddon addonId=<name>), and addonNotFound for unknown names. "
+               + "hasSpec=false means the add-on has never been started, so args and outputs are empty; invokePyAddon action=describe reads them. "
+               + "Use the names returned by polyling_search: kind \"command\" goes in commands, kind \"scenario\" in scenarios, kind \"addon\" in addons. "
+               + "At most 10 names per call, commands, scenarios and add-ons together. Requires the PolyLing panel to be open.")]
     public static Task<string> PolyLingDescribe(
         UiDispatcher ui,
-        [Description("Command names, for example [\"lineExtrude\", \"queryDrawableStats\"]. May be empty when scenarios is given.")] string[]? commands = null,
-        [Description("Scenario names from polyling_search matches of kind \"scenario\". May be empty when commands is given.")] string[]? scenarios = null,
+        [Description("Command names, for example [\"lineExtrude\", \"queryDrawableStats\"]. May be empty when scenarios or addons is given.")] string[]? commands = null,
+        [Description("Scenario names from polyling_search matches of kind \"scenario\". May be empty when commands or addons is given.")] string[]? scenarios = null,
+        [Description("Python add-on names (ids) from polyling_search matches of kind \"addon\", for example [\"mediapipe_face\"]. May be empty when commands or scenarios is given.")] string[]? addons = null,
         [Description("If true, scenario items that call other scenarios are followed and returned as one flat list of items. Cannot be combined with items.")] bool resolve = false,
         [Description("Scenario detail: \"outline\" (default) leaves out argument values; \"full\" includes them.")] string detail = "outline",
         [Description("Scenario item IDs (scenarioItemIds) to return; empty returns every item. Only when exactly one scenario is named, and not with resolve.")] string[]? items = null,
@@ -96,24 +103,29 @@ public static class ProgressiveTools
     {
         var names = CleanNames(commands);
         var scenarioNames = CleanNames(scenarios);
+        var addonNames = CleanNames(addons);
         var itemIds = CleanNames(items);
 
         if (itemIds.Any(n => n.Contains(',')))
             return Task.FromResult("ERROR: an item ID must not contain ','.");
 
-        if (names.Length == 0 && scenarioNames.Length == 0)
-            return Task.FromResult("ERROR: give at least one name in commands or scenarios.");
-        if (names.Length + scenarioNames.Length > 10)
-            return Task.FromResult($"ERROR: at most 10 names per call, commands and scenarios together ({names.Length + scenarioNames.Length} given).");
+        int requested = names.Length + scenarioNames.Length + addonNames.Length;
+        if (requested == 0)
+            return Task.FromResult("ERROR: give at least one name in commands, scenarios or addons.");
+        if (requested > 10)
+            return Task.FromResult($"ERROR: at most 10 names per call, commands, scenarios and add-ons together ({requested} given).");
         if (names.Any(n => n.Contains(',')))
             return Task.FromResult("ERROR: a command name must not contain ','.");
         if (scenarioNames.Any(n => n.Contains(',')))
             return Task.FromResult("ERROR: a scenario name containing ',' cannot be described here; use polyling_call with describeScenario.");
+        if (addonNames.Any(n => n.Contains(',')))
+            return Task.FromResult("ERROR: an add-on name containing ',' cannot be described here; use polyling_call with queryPyAddons.");
 
         var parameters = new Dictionary<string, string>
         {
             ["names"]     = string.Join(",", names),
             ["scenarios"] = string.Join(",", scenarioNames),
+            ["addons"]    = string.Join(",", addonNames),
             ["resolve"]   = resolve ? "true" : "false",
             ["detail"]    = detail ?? string.Empty,
             ["items"]     = string.Join(",", itemIds)

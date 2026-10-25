@@ -340,8 +340,22 @@ internal static class Program
             await next(context);
         });
 
+        // ディスク上の WebClient/MCP_Client.html を探す（exe の場所から上へ。カレントフォルダには依らない）。
+        // 見つかれば要求のたびにそれを読むので、HTML を直したらブラウザの再読み込みだけで反映される。
+        // 見つからなければ（exe だけを配った場合など）埋め込みの写しを返す。
+        string? webClientFile = FindWebClientFile();
+        Console.Error.WriteLine(webClientFile is null
+            ? "WebClient: embedded copy"
+            : $"WebClient: {webClientFile}");
+
         app.MapGet("/", async context =>
         {
+            if (webClientFile is not null && File.Exists(webClientFile))
+            {
+                context.Response.ContentType = "text/html; charset=utf-8";
+                await context.Response.SendFileAsync(webClientFile);
+                return;
+            }
             await using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(WebClientResourceName);
             if (stream is null)
             {
@@ -489,6 +503,20 @@ internal static class Program
             await using var body = await response.Content.ReadAsStreamAsync(context.RequestAborted);
             await body.CopyToAsync(context.Response.Body, context.RequestAborted);
         }
+    }
+
+    /// <summary>
+    /// exe のあるフォルダから親へたどり、WebClient/MCP_Client.html を探す。
+    /// bin/Debug/net8.0 で動かすと 3 つ上のプロジェクトフォルダで見つかる。無ければ null。
+    /// </summary>
+    private static string? FindWebClientFile()
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            string candidate = Path.Combine(dir.FullName, "WebClient", "MCP_Client.html");
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     private static bool HasOption(string[] args, string name) =>

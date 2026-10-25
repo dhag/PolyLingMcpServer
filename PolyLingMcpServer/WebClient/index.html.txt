@@ -55,6 +55,18 @@
   #metricsBar input.price { width: 5.5em; }
   #taskLabel { width: 12em; }
   #taskStatus { font: 12px var(--mono); color: var(--sub); align-self: center; }
+  /* 添付（送信前の一覧）とドロップ先の強調 */
+  #attachments { max-width: 980px; margin: 0 auto 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+  #attachments:empty { display: none; }
+  .chip { font: 12px var(--mono); background: var(--tool); border: 1px solid var(--line); border-radius: 4px;
+          padding: 2px 4px 2px 8px; display: flex; gap: 4px; align-items: center; }
+  .chip button { padding: 0 6px; background: transparent; color: var(--err); border: 0; }
+  .dragover { outline: 2px dashed var(--accent); outline-offset: -2px; }
+  .msg .files { font: 12px var(--mono); color: var(--sub); }
+  .msg .thumbs img { max-height: 120px; max-width: 100%; margin: 4px 4px 0 0; border: 1px solid var(--line); border-radius: 4px; }
+  /* ツールの結果に入った画像。折り畳みの外に、常に見える形で出す */
+  .shot { margin: 8px 0; }
+  .shot img { max-width: 100%; border: 1px solid var(--line); border-radius: 4px; display: block; }
 </style>
 </head>
 <body>
@@ -66,6 +78,8 @@
   </select></label>
   <label id="apiKeyLabel">Anthropic API キー<input id="apiKey" type="password" autocomplete="off" spellcheck="false"></label>
   <label id="openaiKeyLabel" hidden>OpenAI API キー<input id="openaiKey" type="password" autocomplete="off" spellcheck="false"></label>
+  <button id="keyFile" class="ghost" title="キーを書いたテキストファイルを選ぶ。キー欄かこのボタンへドロップしてもよい。最初の空でない行をキーにする">キーファイル</button>
+  <input id="keyFileInput" type="file" accept=".txt,text/plain" hidden>
   <label>モデル<input id="model" list="models" value="claude-sonnet-5" spellcheck="false"></label>
   <datalist id="models">
     <option value="claude-haiku-4-5"></option>
@@ -99,12 +113,15 @@
   <div id="status">未接続</div>
   <div id="log"></div>
 </main>
-<footer>
+<footer id="footer">
+  <div id="attachments"></div>
   <div class="row">
-    <textarea id="prompt" placeholder="メッセージ（Ctrl+Enter で送信）"></textarea>
+    <textarea id="prompt" placeholder="メッセージ（Ctrl+Enter で送信。ファイルはここへドロップ）"></textarea>
     <div class="buttons">
       <button id="send">送信</button>
       <button id="stop" class="ghost" disabled>中止</button>
+      <button id="attach" class="ghost" title="Claude に送るファイルを選ぶ。この欄へドロップしてもよい">ファイル追加</button>
+      <input id="attachInput" type="file" multiple hidden>
     </div>
   </div>
 </footer>
@@ -807,18 +824,21 @@ async function callClaude(signal) {
   return json;
 }
 
-function runTurn(userText) {
-  return provider === "openai" ? runTurnOpenAI(userText) : runTurnAnthropic(userText);
+function runTurn(userText, files) {
+  return provider === "openai" ? runTurnOpenAI(userText) : runTurnAnthropic(userText, files);
 }
 
-async function runTurnAnthropic(userText) {
+async function runTurnAnthropic(userText, files = []) {
   const historyLength = messages.length;
   abortController = new AbortController();
   const signal = abortController.signal;
   setBusy(true);
 
-  messages.push({ role: "user", content: userText });
-  addMessage("user", userText);
+  // 添付があれば内容ブロックの配列にする（ファイル → 本文の順）。無ければ従来どおり文字列。
+  const userContent = files.length === 0 ? userText
+    : [...files.map(attachmentBlock), ...(userText ? [{ type: "text", text: userText }] : [])];
+  messages.push({ role: "user", content: userContent });
+  addMessage("user", userText, files);
 
   try {
     for (let round = 0; ; round++) {
@@ -1103,13 +1123,30 @@ function setProvider(next) {
 // 画面
 // ---------------------------------------------------------------------------
 
-function addMessage(role, text) {
+function addMessage(role, text, files = []) {
   const div = document.createElement("div");
   div.className = "msg " + role;
   const r = document.createElement("div");
   r.className = "role";
   r.textContent = role === "user" ? "you" : PROVIDER_LABEL[provider];
-  div.append(r, document.createTextNode(text));
+  div.append(r);
+  if (files.length > 0) {
+    const names = document.createElement("div");
+    names.className = "files";
+    names.textContent = "添付: " + files.map(f => f.name).join(", ");
+    const thumbs = document.createElement("div");
+    thumbs.className = "thumbs";
+    for (const f of files) {
+      if (f.kind !== "image") continue;
+      const img = document.createElement("img");
+      img.src = `data:${f.mediaType};base64,${f.data}`;
+      img.title = f.name;
+      thumbs.append(img);
+    }
+    div.append(names);
+    if (thumbs.childElementCount > 0) div.append(thumbs);
+  }
+  div.append(document.createTextNode(text));
   $("log").append(div);
   div.scrollIntoView({ block: "end" });
 }
@@ -1153,11 +1190,19 @@ function fillToolResult(view, result, error) {
     view.details.append(pre);
     return;
   }
+  // 画像は折り畳みの外（ツール呼び出しの直後）に出す。開かなくても見えるように。
+  let anchor = view.details;
   for (const c of result.content || []) {
     if (c.type === "image") {
+      const shot = document.createElement("div");
+      shot.className = "shot";
       const img = document.createElement("img");
       img.src = `data:${c.mimeType};base64,${c.data}`;
-      view.details.append(img);
+      img.title = `${view.name} の結果`;
+      shot.append(img);
+      anchor.after(shot);
+      anchor = shot;
+      shot.scrollIntoView({ block: "end" });
     } else {
       const pre = document.createElement("pre");
       pre.textContent = c.type === "text" ? c.text : JSON.stringify(c, null, 2);
@@ -1220,18 +1265,146 @@ $("sceneReload").addEventListener("click", async () => {
 function send() {
   if (busy) return;
   const text = $("prompt").value.trim();
-  if (!text) return;
+  if (!text && attachments.length === 0) return;
+  if (attachments.length > 0 && provider !== "anthropic") { addError("ファイルの添付は Anthropic のときだけ送れる"); return; }
   const keyInput = provider === "openai" ? "openaiKey" : "apiKey";
   if (!$(keyInput).value.trim()) { addError("API キーが空"); return; }
   if (!$("model").value.trim()) { addError("モデルが空"); return; }
   if (currentToolDefs().length === 0) addInfo("MCP 未接続（ツール無し）で送信する");
   $("prompt").value = "";
-  runTurn(text);
+  const files = attachments;
+  attachments = [];
+  renderAttachments();
+  runTurn(text, files);
 }
 
 $("send").addEventListener("click", send);
 $("prompt").addEventListener("keydown", e => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); }
+});
+
+// ---------------------------------------------------------------------------
+// 添付ファイル（Anthropic へ送る）
+// ---------------------------------------------------------------------------
+//
+// 種類で送り方を変える。
+//   PNG / JPEG / GIF / WebP → image ブロック（base64）
+//   PDF                     → document ブロック（base64）
+//   それ以外                 → UTF-8 の文字として text ブロック（先頭にファイル名）
+// 送ったファイルは会話履歴に残り、以後の往復でも毎回送られる。
+
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+let attachments = [];   // { name, kind: "image" | "pdf" | "text", mediaType, data (base64) | text }
+
+function readAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => { const url = String(reader.result); resolve(url.slice(url.indexOf(",") + 1)); };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addAttachments(fileList) {
+  for (const file of fileList) {
+    try {
+      if (IMAGE_TYPES.has(file.type)) {
+        attachments.push({ name: file.name, kind: "image", mediaType: file.type, data: await readAsBase64(file) });
+      } else if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
+        attachments.push({ name: file.name, kind: "pdf", mediaType: "application/pdf", data: await readAsBase64(file) });
+      } else {
+        attachments.push({ name: file.name, kind: "text", text: await file.text() });
+      }
+    } catch (e) {
+      addError(`${file.name} を読めなかった: ${e.message || e}`);
+    }
+  }
+  renderAttachments();
+}
+
+function renderAttachments() {
+  const box = $("attachments");
+  box.replaceChildren(...attachments.map((a, i) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.append(document.createTextNode(a.name));
+    const x = document.createElement("button");
+    x.textContent = "×";
+    x.title = "外す";
+    x.addEventListener("click", () => { attachments.splice(i, 1); renderAttachments(); });
+    chip.append(x);
+    return chip;
+  }));
+}
+
+function attachmentBlock(a) {
+  if (a.kind === "image") return { type: "image", source: { type: "base64", media_type: a.mediaType, data: a.data } };
+  if (a.kind === "pdf") return { type: "document", source: { type: "base64", media_type: a.mediaType, data: a.data }, title: a.name };
+  return { type: "text", text: `[ファイル: ${a.name}]\n${a.text}` };
+}
+
+$("attach").addEventListener("click", () => $("attachInput").click());
+$("attachInput").addEventListener("change", async e => { await addAttachments([...e.target.files]); e.target.value = ""; });
+
+// ---------------------------------------------------------------------------
+// API キーをテキストファイルから読む（選ぶかドロップ）
+// ---------------------------------------------------------------------------
+
+/** 最初の空でない行をキーにする。inputId を省くと今の API のキー欄へ入れる。キーそのものは表示しない。 */
+async function loadKeyFile(file, inputId) {
+  const id = inputId ?? (provider === "openai" ? "openaiKey" : "apiKey");
+  const line = (await file.text()).split(/\r?\n/).map(t => t.trim()).find(t => t !== "");
+  if (!line) { addError(`${file.name} にキーが書かれていない`); return; }
+  $(id).value = line;
+  addInfo(`${id === "openaiKey" ? "OpenAI" : "Anthropic"} の API キーを ${file.name} から読んだ`);
+}
+
+$("keyFile").addEventListener("click", () => $("keyFileInput").click());
+$("keyFileInput").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (f) { try { await loadKeyFile(f); } catch (err) { addError(String(err.message || err)); } }
+  e.target.value = "";
+});
+
+// ---------------------------------------------------------------------------
+// ドロップ
+// ---------------------------------------------------------------------------
+//
+// ページのどこに落としてもブラウザがファイルを開いて画面が切り替わらないよう、既定の動作は常に止める。
+// キー欄・キーファイルボタンへ落としたらキー、下の入力欄（footer）へ落としたら添付にする。
+
+function dropTargetOf(el) {
+  if (!(el instanceof Element)) return null;
+  return el.closest("#apiKey, #openaiKey, #keyFile, #footer");
+}
+
+let dragTarget = null;
+function setDragTarget(el) {
+  if (dragTarget === el) return;
+  dragTarget?.classList.remove("dragover");
+  dragTarget = el;
+  dragTarget?.classList.add("dragover");
+}
+
+window.addEventListener("dragover", e => {
+  e.preventDefault();
+  const t = dropTargetOf(e.target);
+  e.dataTransfer.dropEffect = t ? "copy" : "none";
+  setDragTarget(t);
+});
+window.addEventListener("dragleave", e => { if (e.relatedTarget === null) setDragTarget(null); });
+window.addEventListener("drop", async e => {
+  e.preventDefault();
+  const t = dropTargetOf(e.target);
+  setDragTarget(null);
+  const files = [...(e.dataTransfer?.files ?? [])];
+  if (!t || files.length === 0) return;
+  try {
+    if (t.id === "footer") await addAttachments(files);
+    else await loadKeyFile(files[0], t.id === "keyFile" ? undefined : t.id);
+  } catch (err) {
+    addError(String(err.message || err));
+  }
 });
 </script>
 </body>
