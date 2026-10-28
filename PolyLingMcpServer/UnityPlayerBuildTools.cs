@@ -37,6 +37,7 @@ public static class UnityPlayerBuildTools
                + "If the Editor is in Play mode it is stopped first, and the tool waits for Edit mode before building. "
                + "The reply comes back when the build has finished. Fails if the output exe is running; call player_stop first.")]
     public static Task<string> UnityBuildPlayer(
+        ServerState state,
         UiDispatcher ui,
         [Description("Output exe, relative to the Unity project folder or absolute. Defaults to ビルド用/PolyLing.exe.")] string? output_path = null,
         [Description("Make a development build. Default false.")] bool? development = null,
@@ -46,6 +47,13 @@ public static class UnityPlayerBuildTools
         var p = new Dictionary<string, string>();
         if (!string.IsNullOrWhiteSpace(output_path)) p["outputPath"] = output_path;
         if (development.HasValue) p["development"] = development.Value ? "true" : "false";
+
+        // Editor 側はビルド本体を EditorApplication.delayCall で実行する（プレイヤーループ内では
+        // BuildPlayer が拒否されるため）。Editor が背面にあると delayCall が回らずビルドが始まらないので、
+        // 先に Editor を前面に出す。前面化できなければビルドは送らない。
+        string focus = UnityWindowTools.UnityFocus(state, ui);
+        if (focus.StartsWith("ERROR", StringComparison.Ordinal))
+            return Task.FromResult(focus + "\nERROR: unity_build_player brings the Editor to the front before building and could not, so the build was not started.");
 
         return UnityPrefabTools.RunInEditMode("build_player", p, ui, timeout_ms, cancellationToken);
     }
