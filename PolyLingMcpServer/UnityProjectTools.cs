@@ -10,6 +10,15 @@ namespace PolyLingMcpServer;
 [McpServerToolType]
 public static class UnityProjectTools
 {
+    /// <summary>
+    /// ファイルの道具の説明に足す一文（再発防止。会話を要約するとセッション最初の案内 primer.md が消えるので、
+    /// 毎回読み込まれる道具の説明に要点を置く）。
+    /// </summary>
+    private const string LocalSourceNote =
+        " The source of this MCP server itself is in this project under データとツール/PolyLingMcpServer/PolyLingMcpServer/ and is editable here."
+        + " Always edit the local files directly with these tools; do not fetch sources from GitHub when the local copy exists."
+        + " After the conversation has been summarized, re-read Packages/com.haglib.polyling/McpGuide/primer.md before continuing.";
+
     [McpServerTool(Name = "ping", ReadOnly = true), Description("Checks whether the MCP server is running.")]
     public static string Ping(UiDispatcher ui)
     {
@@ -18,7 +27,7 @@ public static class UnityProjectTools
     }
 
     [McpServerTool(Name = "list_files", ReadOnly = true),
-     Description("Lists files under the configured Unity project. Paths are project-relative. Use this before reading unfamiliar source trees.")]
+     Description("Lists files under the configured Unity project. Paths are project-relative. Use this before reading unfamiliar source trees." + LocalSourceNote)]
     public static string ListFiles(
         ServerState state,
         UiDispatcher ui,
@@ -74,7 +83,7 @@ public static class UnityProjectTools
 
     [McpServerTool(Name = "read_file", ReadOnly = true),
      Description("Reads a text file from the configured Unity project. The path must be project-relative. "
-               + "The file is decoded as UTF-8 unless encoding says otherwise (MQO files are shift_jis).")]
+               + "The file is decoded as UTF-8 unless encoding says otherwise (MQO files are shift_jis)." + LocalSourceNote)]
     public static async Task<string> ReadFile(
         ServerState state,
         UiDispatcher ui,
@@ -107,7 +116,7 @@ public static class UnityProjectTools
     }
 
     [McpServerTool(Name = "write_file", Destructive = true),
-     Description("Creates or replaces a text file inside one of the configured editable folders of the Unity project.")]
+     Description("Creates or replaces a text file inside one of the configured editable folders of the Unity project." + LocalSourceNote)]
     public static async Task<string> WriteFile(
         ServerState state,
         UiDispatcher ui,
@@ -140,7 +149,7 @@ public static class UnityProjectTools
     }
 
     [McpServerTool(Name = "apply_patch", Destructive = true),
-     Description("Applies a safe exact-text patch inside one of the editable folders. By default old_text must occur exactly once, avoiding ambiguous edits.")]
+     Description("Applies a safe exact-text patch inside one of the editable folders. By default old_text must occur exactly once, avoiding ambiguous edits." + LocalSourceNote)]
     public static async Task<string> ApplyPatch(
         ServerState state,
         UiDispatcher ui,
@@ -594,7 +603,7 @@ public static class UnityProjectTools
         UiDispatcher ui,
         [Description("Command name from polyling_tools, for example 'smoothEdges'.")] string command,
         [Description("Arguments as a flat JSON object of string values, for example {\"strength\":\"0.5\"}. Nested values use dotted keys such as 'params.widthTop'. Arrays are sent as one comma-separated string such as \"1,2,3\".")] string? args = null,
-        [Description("Target model index. Defaults to 0.")] int model_index = 0,
+        [Description("Target model index. Omit (or pass -1) to target the current model.")] int model_index = -1,
         [Description("How long to wait for the Editor to answer, in milliseconds.")] int timeout_ms = 30000,
         CancellationToken cancellationToken = default)
     {

@@ -168,7 +168,7 @@ public static class ProfileRules
         ServerProfile.Generic =>
             "PolyLing commands are exposed as individual tools named pl_<command>. "
             + "Call the matching pl_ tool directly with its arguments. "
-            + "Each pl_ tool also accepts model_index (default 0).",
+            + "Each pl_ tool also accepts model_index (omit it to target the current model).",
         ServerProfile.Current =>
             "PolyLing commands are run with polyling_call. "
             + "Call polyling_tools first to get every command name and its argument schema, then call polyling_call.",

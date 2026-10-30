@@ -14,7 +14,7 @@ namespace PolyLingMcpServer;
 ///   PolyLing の全コマンドを pl_&lt;コマンド名&gt; の道具として tools/list に並べる。
 ///   一般的な MCP サーバ（機能ごとに道具を 1 本ずつ公開する）と同じ形にするため、
 ///   各道具の inputSchema は PolyLing が生成したものをそのまま使い、
-///   model_index（既定 0）だけを足す。polyling_call の model_index と同じ役割。
+///   model_index（既定 -1 ＝カレントのモデル）だけを足す。polyling_call の model_index と同じ役割。
 ///
 /// 【outputSchema を付けない理由】
 ///   MCP 仕様では outputSchema を宣言した道具は structuredContent を返さなければならない。
@@ -114,7 +114,7 @@ public static class GenericCommandTools
             properties[ModelIndexKey] = new JsonObject
             {
                 ["type"] = "integer",
-                ["description"] = "Target model index. Defaults to 0."
+                ["description"] = "Target model index. Omit it to target the current model."
             };
 
             tools.Add(new Tool
@@ -145,7 +145,7 @@ public static class GenericCommandTools
 
         string command = name[ProfileRules.GenericToolPrefix.Length..];
         var parameters = new Dictionary<string, string>();
-        int modelIndex = 0;
+        int modelIndex = -1;   // 省いたら -1（Unity 側がカレントのモデルにする）
 
         try
         {
