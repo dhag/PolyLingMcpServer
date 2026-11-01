@@ -28,7 +28,10 @@ namespace PolyLingMcpServer;
 /// </summary>
 public static class EditorControlClient
 {
-    /// <summary>Must match PolyLingEditorControlServer.Port on the Unity side.</summary>
+    /// <summary>
+    /// Must match PolyLingEditorControlServer.Port on the Unity side.
+    /// ビルド構成ファイルでは変えない（editor.port は書くと拒否。BuildInstances.cs の注記）。
+    /// </summary>
     public const int Port = 8770;
 
     /// <summary>
@@ -48,7 +51,10 @@ public static class EditorControlClient
     public const string Host = "127.0.0.1";
 
     /// <summary>ログや文言に出す接続先。</summary>
-    public static string Endpoint => $"{Host}:{TargetPort}";
+    public static string Endpoint => EndpointOf(TargetPort);
+
+    /// <summary>ポートの接続先。instance（構成名）で選んだ接続先の文言に使う。</summary>
+    public static string EndpointOf(int port) => $"{Host}:{port}";
 
     /// <summary>Editor の接続先。ログや文言に出す。</summary>
     public static string EditorEndpoint => $"{Host}:{Port}";
@@ -70,12 +76,18 @@ public static class EditorControlClient
         public long      ElapsedMs  { get; }
         public string    InnerName  { get; }
 
-        public EditorControlException(FailStage stage, long elapsedMs, Exception? inner)
+        /// <summary>送った先のポート。文言に出す接続先はこれから作る（TargetPort とは限らない）。</summary>
+        public int       Port       { get; }
+
+        public string    Endpoint   => EndpointOf(Port);
+
+        public EditorControlException(FailStage stage, long elapsedMs, Exception? inner, int port)
             : base(inner?.Message ?? stage.ToString(), inner)
         {
             Stage     = stage;
             ElapsedMs = elapsedMs;
             InnerName = inner?.GetType().Name ?? "(none)";
+            Port      = port;
         }
     }
 
@@ -95,8 +107,11 @@ public static class EditorControlClient
         CancellationToken cancellationToken = default)
         => SendToAsync(Port, action, timeoutMs, parameters, cancellationToken);
 
-    /// <summary>One connection per call. The Editor domain reloads often, so no channel is kept open.</summary>
-    private static async Task<EditorControlResult> SendToAsync(
+    /// <summary>
+    /// 指定のポートへ送る。instance（構成名）で選んだ接続先（InstanceResolver）に使う。
+    /// One connection per call. The Editor domain reloads often, so no channel is kept open.
+    /// </summary>
+    public static async Task<EditorControlResult> SendToAsync(
         int port,
         string action,
         int timeoutMs,
@@ -121,7 +136,7 @@ public static class EditorControlClient
         catch (Exception ex) when (ex is TimeoutException or OperationCanceledException or System.Net.Sockets.SocketException)
         {
             sw.Stop();
-            throw new EditorControlException(FailStage.Connect, sw.ElapsedMilliseconds, ex);
+            throw new EditorControlException(FailStage.Connect, sw.ElapsedMilliseconds, ex, port);
         }
         sw.Stop();
         long connectMs = sw.ElapsedMilliseconds;
@@ -141,7 +156,7 @@ public static class EditorControlClient
         catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
         {
             sw2.Stop();
-            throw new EditorControlException(FailStage.Reply, sw2.ElapsedMilliseconds, ex);
+            throw new EditorControlException(FailStage.Reply, sw2.ElapsedMilliseconds, ex, port);
         }
         sw2.Stop();
 

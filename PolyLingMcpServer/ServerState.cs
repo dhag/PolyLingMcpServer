@@ -24,6 +24,13 @@ public sealed class ServerState
     public string ProjectRoot { get; set; } = string.Empty;
 
     /// <summary>
+    /// --project で Unity プロジェクトが与えられたか。--target player で --project を省くと
+    /// ProjectRoot はキャプチャフォルダになるので、ProjectRoot が空かどうかでは判断できない。
+    /// instance（構成名）はプロジェクトの構成ファイルを読むので、これが false なら使えない（InstanceResolver）。
+    /// </summary>
+    public bool HasProject { get; set; }
+
+    /// <summary>
     /// プロジェクトの外に足した読み取りルート。--root 名前=絶対パス で宣言する。
     /// 例: PolyLing の設定の置き場（%LOCALAPPDATA%Low\HagiharaLab）。
     /// 読めるだけで、書けるかどうかは EditableFolders が決める。

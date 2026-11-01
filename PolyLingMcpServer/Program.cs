@@ -181,6 +181,7 @@ internal static class Program
             MetricsSearch = metricsSearch,
             DefaultScene = (GetOption(args, "--scene") ?? string.Empty).Trim(),
             ProjectRoot = projectUsable ? Path.GetFullPath(projectRoot!) : string.Empty,
+            HasProject = projectUsable,
             ExtraRoots = extraRoots,
             EditableFolders = editableFolders,
             UnityLogPath = Path.GetFullPath(unityLogPath),

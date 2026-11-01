@@ -118,16 +118,26 @@ public static class UnityWindowTools
 
     [McpServerTool(Name = "unity_focus", Destructive = false),
      Description("Brings the Unity Editor main window to the front (with --target player, the built PolyLing player's window). "
+               + "With instance, brings that build configuration's window to the front: the Editor for the editor entry, "
+               + "or the running process of that configuration's exe for a builds entry. "
                + "This runs inside the MCP server process and does not talk to Unity, "
                + "so unlike unity_state it also works while the Editor is compiling or importing assets. Windows only.")]
-    public static string UnityFocus(ServerState state, UiDispatcher ui)
+    public static string UnityFocus(
+        ServerState state,
+        UiDispatcher ui,
+        [Description(UnityProjectTools.InstanceDescription)] string? instance = null)
     {
-        ui.Log("unity_focus");
+        ui.Log($"unity_focus instance={instance}");
 
-        // 探すプロセス名。editor は "Unity"、player は --player-exe（ServerState.FocusProcessName）。
-        string processName = state.FocusProcessName;
+        // 探すプロセス。instance 省略時: editor は "Unity"、player は --player-exe（ServerState.FocusProcessName）。
+        // ビルド構成を指したときは、その exe のパスと実行ファイルが一致するプロセスだけ（同名の別ビルドを取り違えない）。
+        if (!InstanceResolver.TryResolve(state, instance, out var resolved, out var resolveError))
+            return resolveError;
+
+        string processName = resolved.ProcessName;
+        string? exePath    = resolved.ExeFullPath;
         if (string.IsNullOrWhiteSpace(processName))
-            return "ERROR: no process name to bring to the front. Start the server with --player-exe <process name> when --target player is used.";
+            return "ERROR: no process name to bring to the front. Start the server with --player-exe <process name> when --target player is used, or give instance.";
 
         if (!OperatingSystem.IsWindows())
             return "ERROR: unity_focus works on Windows only.";
@@ -164,11 +174,21 @@ public static class UnityWindowTools
 
                 if (handle == IntPtr.Zero) continue;
 
+                if (exePath != null)
+                {
+                    string? file = null;
+                    try { file = process.MainModule?.FileName; } catch { }
+                    if (file == null || !string.Equals(Path.GetFullPath(file), exePath, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                }
+
                 candidates.Add((process.Id, handle, title));
             }
 
             if (candidates.Count == 0)
-                return $"ERROR: no '{processName}' process with a main window was found. Is it running?";
+                return exePath != null
+                    ? $"ERROR: no process of {exePath} ({resolved.Describe}) with a main window was found. Start it with player_launch."
+                    : $"ERROR: no '{processName}' process with a main window was found. Is it running?";
 
             if (candidates.Count > 1)
             {

@@ -82,12 +82,18 @@ public static class UnityCaptureTools
         int quality = 90,
         [Description("How long to wait for the whole thing, in milliseconds.")]
         int timeout_ms = 15000,
+        [Description(UnityProjectTools.InstanceDescription)]
+        string? instance = null,
         CancellationToken cancellationToken = default)
     {
         ui.Log($"unity_capture target={target} panel_id={panel_id} folder={folder} base_name={base_name} "
-             + $"max_long_edge={max_long_edge} format={format} focus={focus}");
+             + $"max_long_edge={max_long_edge} format={format} focus={focus} instance={instance}");
 
         if (timeout_ms < 1000) timeout_ms = 1000;
+
+        if (!InstanceResolver.TryResolveReachable(state, instance, out var where, out var whereError))
+            return McpContent.Error(whereError);
+        int port = where.Port;
 
         if (!TryResolveCaptureSubFolder(state, folder, out var captureFolder, out var folderError))
             return McpContent.Error(folderError);
@@ -100,7 +106,7 @@ public static class UnityCaptureTools
         string focusDetail = "focus=skipped";
         if (focus)
         {
-            var focusResult = UnityWindowTools.UnityFocus(state, ui);
+            var focusResult = UnityWindowTools.UnityFocus(state, ui, instance);
             focusDetail = focusResult.StartsWith("ERROR:", StringComparison.Ordinal)
                 ? "focus failed: " + focusResult
                 : "focus=ok";
@@ -121,7 +127,7 @@ public static class UnityCaptureTools
             ["quality"]     = Math.Clamp(quality, 1, 100).ToString(),
         };
 
-        var start = await CallEditorAsync(startArgs, Remaining(watch, deadline), cancellationToken)
+        var start = await CallEditorAsync(port, startArgs, Remaining(watch, deadline), cancellationToken)
                           .ConfigureAwait(false);
 
         if (!start.Ok)
@@ -158,7 +164,7 @@ public static class UnityCaptureTools
             await Task.Delay(PollIntervalMs, cancellationToken).ConfigureAwait(false);
             polls++;
 
-            var poll = await CallEditorAsync(statusArgs, Remaining(watch, deadline), cancellationToken)
+            var poll = await CallEditorAsync(port, statusArgs, Remaining(watch, deadline), cancellationToken)
                              .ConfigureAwait(false);
 
             if (!poll.Ok)
@@ -289,26 +295,26 @@ public static class UnityCaptureTools
     /// 文字列として返すのが仕事なのに対し、こちらは中の値を読む。
     /// </summary>
     private static async Task<EditorCall> CallEditorAsync(
-        IReadOnlyDictionary<string, string> parameters, int timeoutMs, CancellationToken cancellationToken)
+        int port, IReadOnlyDictionary<string, string> parameters, int timeoutMs, CancellationToken cancellationToken)
     {
         EditorControlResult result;
 
         try
         {
-            result = await EditorControlClient.SendAsync("call", timeoutMs, parameters, cancellationToken)
+            result = await EditorControlClient.SendToAsync(port, "call", timeoutMs, parameters, cancellationToken)
                                               .ConfigureAwait(false);
         }
         catch (EditorControlClient.EditorControlException ex)
         {
             var where = ex.Stage == EditorControlClient.FailStage.Connect
-                ? $"could not connect to {EditorControlClient.Endpoint} within {ex.ElapsedMs}ms. Is the Unity Editor open?"
+                ? $"could not connect to {ex.Endpoint} within {ex.ElapsedMs}ms. Is the Unity Editor open?"
                 : $"the Unity Editor did not answer within {ex.ElapsedMs}ms. Is it compiling or importing?";
 
             return EditorCall.Failed(where);
         }
         catch (Exception ex)
         {
-            return EditorCall.Failed($"could not reach the Unity Editor on {EditorControlClient.Endpoint}. {ex.Message}");
+            return EditorCall.Failed($"could not reach the Unity Editor on {EditorControlClient.EndpointOf(port)}. {ex.Message}");
         }
 
         if (!result.Success)

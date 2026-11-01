@@ -356,21 +356,40 @@ public static class UnityProjectTools
     // only requirement; the PolyLing window does not have to be open.
     // ================================================================
 
+    /// <summary>instance 引数の説明。接続先を決める道具で共通に使う。</summary>
+    internal const string InstanceDescription =
+        "Build configuration name to talk to, from Assets/PolyLingBuild/ビルド構成.json (or the package default "
+        + "Packages/com.haglib.polyling/Editor/Build/既定ビルド構成.json): the editor entry's name (default 'editor') is the Unity Editor, "
+        + "a builds entry's name (default 'player') is that built player on its configured port. "
+        + "Omit to use the server's startup --target.";
+
     [McpServerTool(Name = "unity_ping", ReadOnly = true),
-     Description("Checks whether the Unity Editor is running and its control server answers. Use this before any other unity_ tool.")]
-    public static Task<string> UnityPing(
+     Description("Checks whether the Unity Editor is running and its control server answers. Use this before any other unity_ tool. "
+               + "With instance, checks that Editor or built player instead.")]
+    public static async Task<string> UnityPing(
+        ServerState state,
         UiDispatcher ui,
         [Description("How long to wait for the Editor to answer, in milliseconds.")] int timeout_ms = 3000,
+        [Description(InstanceDescription)] string? instance = null,
         CancellationToken cancellationToken = default)
-        => SendEditorAction("ping", ui, timeout_ms, cancellationToken);
+    {
+        if (!InstanceResolver.TryResolveReachable(state, instance, out var target, out var error)) return error;
+        return await SendEditorAction("ping", ui, timeout_ms, cancellationToken, target.Port);
+    }
 
     [McpServerTool(Name = "unity_state", ReadOnly = true),
-     Description("Reports whether the Unity Editor is in Play mode, paused, compiling or importing assets. Call this after unity_play or unity_stop to confirm the result.")]
-    public static Task<string> UnityState(
+     Description("Reports whether the Unity Editor is in Play mode, paused, compiling or importing assets. Call this after unity_play or unity_stop to confirm the result. "
+               + "With instance, asks that Editor or built player instead.")]
+    public static async Task<string> UnityState(
+        ServerState state,
         UiDispatcher ui,
         [Description("How long to wait for the Editor to answer, in milliseconds.")] int timeout_ms = 3000,
+        [Description(InstanceDescription)] string? instance = null,
         CancellationToken cancellationToken = default)
-        => SendEditorAction("state", ui, timeout_ms, cancellationToken);
+    {
+        if (!InstanceResolver.TryResolveReachable(state, instance, out var target, out var error)) return error;
+        return await SendEditorAction("state", ui, timeout_ms, cancellationToken, target.Port);
+    }
 
     [McpServerTool(Name = "unity_play", Destructive = false),
      Description("Puts the Unity Editor into Play mode. The reply comes back before the transition happens, because entering Play mode reloads the Editor's script domain and drops this connection. Call unity_state afterwards to confirm. Fails if the Editor is already playing, compiling or importing assets.")]
@@ -550,13 +569,15 @@ public static class UnityProjectTools
         string action,
         UiDispatcher ui,
         int timeout_ms,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? port = null)
     {
-        ui.Log($"unity_{action} timeout={timeout_ms}ms");
+        int to = port ?? EditorControlClient.TargetPort;
+        ui.Log($"unity_{action} port={to} timeout={timeout_ms}ms");
 
         try
         {
-            var result = await EditorControlClient.SendAsync(action, timeout_ms, null, cancellationToken);
+            var result = await EditorControlClient.SendToAsync(to, action, timeout_ms, null, cancellationToken);
 
             if (!result.Success)
                 return $"ERROR: the Unity Editor rejected '{action}': {result.Error}";
@@ -573,7 +594,7 @@ public static class UnityProjectTools
         }
         catch (Exception ex)
         {
-            return $"ERROR: could not reach the Unity Editor on {EditorControlClient.Endpoint}. "
+            return $"ERROR: could not reach the Unity Editor on {EditorControlClient.EndpointOf(to)}. "
                    + $"Is it open? {ex.Message}";
         }
     }
@@ -590,10 +611,16 @@ public static class UnityProjectTools
     [McpServerTool(Name = "polyling_tools", ReadOnly = true),
      Description("Lists the PolyLing commands that can be issued with polyling_call, as a JSON Schema document. Requires the PolyLing panel to be open.")]
     public static Task<IEnumerable<ContentBlock>> PolyLingTools(
+        ServerState state,
         UiDispatcher ui,
         [Description("How long to wait for the Editor to answer, in milliseconds.")] int timeout_ms = 10000,
+        [Description(InstanceDescription)] string? instance = null,
         CancellationToken cancellationToken = default)
-        => SendEditorRaw("tools", null, ui, timeout_ms, cancellationToken);
+    {
+        if (!InstanceResolver.TryResolveReachable(state, instance, out var target, out var error))
+            return Task.FromResult(McpContent.Error(error));
+        return SendEditorRaw("tools", null, ui, timeout_ms, cancellationToken, target.Port);
+    }
 
     [McpServerTool(Name = "polyling_call", Destructive = true),
      Description("Runs one PolyLing command. Use polyling_tools first to see the command names and their arguments. Requires the PolyLing panel to be open.")]
@@ -605,10 +632,14 @@ public static class UnityProjectTools
         [Description("Arguments as a flat JSON object of string values, for example {\"strength\":\"0.5\"}. Nested values use dotted keys such as 'params.widthTop'. Arrays are sent as one comma-separated string such as \"1,2,3\".")] string? args = null,
         [Description("Target model index. Omit (or pass -1) to target the current model.")] int model_index = -1,
         [Description("How long to wait for the Editor to answer, in milliseconds.")] int timeout_ms = 30000,
+        [Description(InstanceDescription)] string? instance = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(command))
             return Task.FromResult(McpContent.Error("command must not be empty."));
+
+        if (!InstanceResolver.TryResolveReachable(state, instance, out var target, out var targetError))
+            return Task.FromResult(McpContent.Error(targetError));
 
         Dictionary<string, string> parameters;
         try
@@ -630,7 +661,7 @@ public static class UnityProjectTools
         // 版と差分は profile=optimized のときだけ足す。他の条件の応答は 5ee9a518 のまま。
         if (state.Profile == ServerProfile.Optimized) parameters["wantRevision"] = "1";
 
-        return SendEditorRaw("call", parameters, ui, timeout_ms, cancellationToken);
+        return SendEditorRaw("call", parameters, ui, timeout_ms, cancellationToken, target.Port);
     }
 
     /// <summary>
@@ -643,13 +674,15 @@ public static class UnityProjectTools
         IReadOnlyDictionary<string, string>? parameters,
         UiDispatcher ui,
         int timeout_ms,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? port = null)
     {
-        ui.Log($"polyling_{action} timeout={timeout_ms}ms");
+        int to = port ?? EditorControlClient.TargetPort;
+        ui.Log($"polyling_{action} port={to} timeout={timeout_ms}ms");
 
         try
         {
-            var result = await EditorControlClient.SendAsync(action, timeout_ms, parameters, cancellationToken);
+            var result = await EditorControlClient.SendToAsync(to, action, timeout_ms, parameters, cancellationToken);
 
             if (!result.Success)
                 return McpContent.Error($"the Unity Editor rejected '{action}': {result.Error}");
@@ -684,7 +717,7 @@ public static class UnityProjectTools
         }
         catch (Exception ex)
         {
-            return McpContent.Error($"could not reach the Unity Editor on {EditorControlClient.Endpoint}. "
+            return McpContent.Error($"could not reach the Unity Editor on {EditorControlClient.EndpointOf(to)}. "
                                   + $"Is it open? {ex.Message}");
         }
     }
@@ -696,7 +729,7 @@ public static class UnityProjectTools
     internal static string StageMessage(EditorControlClient.EditorControlException ex, int timeoutMs)
         => ex.Stage == EditorControlClient.FailStage.Connect
             ? $"ERROR: ポートに接続できませんでした（{ex.ElapsedMs}ms / 上限 {timeoutMs}ms）。"
-              + $"endpoint={EditorControlClient.Endpoint}; {ex.InnerName}。"
+              + $"endpoint={ex.Endpoint}; {ex.InnerName}。"
               + "Unity Editor が開いていて、待ち受けが立っているかを確認してください。"
             : $"ERROR: 接続はできましたが、応答が {ex.ElapsedMs}ms 以内に返りませんでした（上限 {timeoutMs}ms）。"
               + $"{ex.InnerName}。Editor がコンパイル中・インポート中でないか確認してください。";

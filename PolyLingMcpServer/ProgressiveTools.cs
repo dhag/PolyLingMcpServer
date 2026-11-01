@@ -30,6 +30,7 @@ public static class ProgressiveTools
                + "Pass the chosen command names as commands, scenario names as scenarios, and add-on names (ids) as addons, to polyling_describe. "
                + "An empty query lists everything by name, page by page. Requires the PolyLing panel to be open.")]
     public static Task<string> PolyLingSearch(
+        ServerState state,
         UiDispatcher ui,
         [Description("What you want to do, in words, for example '選択した辺から板を作る' or 'mirror bones'. Empty lists everything.")] string query = "",
         [Description("Optional: \"command\" returns only commands, \"scenario\" only scenarios, \"addon\" only Python add-ons. Empty returns all three. "
@@ -46,6 +47,7 @@ public static class ProgressiveTools
         [Description("Number of matches to skip, for paging.")] int offset = 0,
         [Description("Maximum number of matches to return. 1 to 50.")] int limit = 8,
         [Description("How long to wait for the Editor to answer, in milliseconds.")] int timeout_ms = 10000,
+        [Description(UnityProjectTools.InstanceDescription)] string? instance = null,
         CancellationToken cancellationToken = default)
     {
         var parameters = new Dictionary<string, string>
@@ -59,7 +61,7 @@ public static class ProgressiveTools
             ["limit"]    = Math.Clamp(limit, 1, 50).ToString()
         };
 
-        return SendForResult("tools_search", parameters, ui, timeout_ms, cancellationToken);
+        return SendForResult(state, instance, "tools_search", parameters, ui, timeout_ms, cancellationToken);
     }
 
     [McpServerTool(Name = "polyling_scenes", ReadOnly = true),
@@ -72,10 +74,12 @@ public static class ProgressiveTools
                + "Pass a usage scene name to polyling_search to search only its commands. "
                + "Scenes are created and changed with the PolyLing commands setScene and deleteScene.")]
     public static Task<string> PolyLingScenes(
+        ServerState state,
         UiDispatcher ui,
         [Description("How long to wait for the Editor to answer, in milliseconds.")] int timeout_ms = 10000,
+        [Description(UnityProjectTools.InstanceDescription)] string? instance = null,
         CancellationToken cancellationToken = default)
-        => SendForResult("scenes", new Dictionary<string, string>(), ui, timeout_ms, cancellationToken);
+        => SendForResult(state, instance, "scenes", new Dictionary<string, string>(), ui, timeout_ms, cancellationToken);
 
     [McpServerTool(Name = "polyling_describe", ReadOnly = true),
      Description("Returns the full argument (input) and result (output) JSON Schema of the named PolyLing commands, "
@@ -91,6 +95,7 @@ public static class ProgressiveTools
                + "Use the names returned by polyling_search: kind \"command\" goes in commands, kind \"scenario\" in scenarios, kind \"addon\" in addons. "
                + "At most 10 names per call, commands, scenarios and add-ons together. Requires the PolyLing panel to be open.")]
     public static Task<string> PolyLingDescribe(
+        ServerState state,
         UiDispatcher ui,
         [Description("Command names, for example [\"lineExtrude\", \"queryDrawableStats\"]. May be empty when scenarios or addons is given.")] string[]? commands = null,
         [Description("Scenario names from polyling_search matches of kind \"scenario\". May be empty when commands or addons is given.")] string[]? scenarios = null,
@@ -99,6 +104,7 @@ public static class ProgressiveTools
         [Description("Scenario detail: \"outline\" (default) leaves out argument values; \"full\" includes them.")] string detail = "outline",
         [Description("Scenario item IDs (scenarioItemIds) to return; empty returns every item. Only when exactly one scenario is named, and not with resolve.")] string[]? items = null,
         [Description("How long to wait for the Editor to answer, in milliseconds.")] int timeout_ms = 10000,
+        [Description(UnityProjectTools.InstanceDescription)] string? instance = null,
         CancellationToken cancellationToken = default)
     {
         var names = CleanNames(commands);
@@ -130,7 +136,7 @@ public static class ProgressiveTools
             ["detail"]    = detail ?? string.Empty,
             ["items"]     = string.Join(",", itemIds)
         };
-        return SendForResult("tools_describe", parameters, ui, timeout_ms, cancellationToken);
+        return SendForResult(state, instance, "tools_describe", parameters, ui, timeout_ms, cancellationToken);
     }
 
     /// <summary>空白を除き、空と重複を外す。</summary>
@@ -146,17 +152,22 @@ public static class ProgressiveTools
     /// 失敗は他の道具と同じく "ERROR: " 始まり。
     /// </summary>
     private static async Task<string> SendForResult(
+        ServerState state,
+        string? instance,
         string action,
         IReadOnlyDictionary<string, string> parameters,
         UiDispatcher ui,
         int timeout_ms,
         CancellationToken cancellationToken)
     {
-        ui.Log($"polyling_{action} timeout={timeout_ms}ms");
+        if (!InstanceResolver.TryResolveReachable(state, instance, out var target, out var targetError))
+            return targetError;
+
+        ui.Log($"polyling_{action} port={target.Port} timeout={timeout_ms}ms");
 
         try
         {
-            var reply = await EditorControlClient.SendAsync(action, timeout_ms, parameters, cancellationToken);
+            var reply = await EditorControlClient.SendToAsync(target.Port, action, timeout_ms, parameters, cancellationToken);
             if (!reply.Success)
                 return $"ERROR: the Unity Editor rejected '{action}': {reply.Error}";
 
@@ -177,7 +188,7 @@ public static class ProgressiveTools
         }
         catch (Exception ex)
         {
-            return $"ERROR: could not reach the Unity Editor on {EditorControlClient.Endpoint}. "
+            return $"ERROR: could not reach the Unity Editor on {target.Endpoint}. "
                    + $"Is it open? {ex.Message}";
         }
     }
