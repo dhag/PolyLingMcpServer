@@ -18,13 +18,13 @@ http://127.0.0.1:8771/
 
 
 
-ユニティエディタ用評価用A　　　　　　　MCPで自動生成\E
+ユニティエディタ用評価用A　　　　　　　サンドボックス_シナリオ用\MCPで自動生成\E
 
-.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe  --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --profile generic --metrics データとツール\MCPで自動生成\E\generic.jsonl
+.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe  --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --profile generic --metrics データとツール\サンドボックス_シナリオ用\MCPで自動生成\E\generic.jsonl
 
-ユニティエディタ用評価用C　　　　　　　MCPで自動生成\E
+ユニティエディタ用評価用C　　　　　　　サンドボックス_シナリオ用\MCPで自動生成\E
 
-.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe  --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --profile optimized --metrics データとツール\MCPで自動生成\E\optimized.jsonl
+.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe  --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --profile optimized --metrics データとツール\サンドボックス_シナリオ用\MCPで自動生成\E\optimized.jsonl
 
 
 
