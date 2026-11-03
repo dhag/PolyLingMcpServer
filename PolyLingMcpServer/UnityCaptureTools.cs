@@ -80,6 +80,16 @@ public static class UnityCaptureTools
         string format = "png",
         [Description("jpeg quality, 1 to 100. Ignored for png.")]
         int quality = 90,
+        [Description("Draws an arrow on the picture: none (the default), control (the centre of the button or field in cursor_control_id), "
+                   + "position (cursor_x, cursor_y) or mouse (the real mouse position). The real cursor is not photographed. "
+                   + "An arrow outside the shot is not drawn and the result says so.")]
+        string cursor = "none",
+        [Description("Id of the button or field for cursor=control, as listed by the PolyLing command uiDescribe. It has to be displayed: use uiReveal first.")]
+        string cursor_control_id = "",
+        [Description("For cursor=position: horizontal position as a ratio of the shot, 0 is the left edge and 1 the right edge.")]
+        float cursor_x = -1f,
+        [Description("For cursor=position: vertical position as a ratio of the shot, 0 is the top edge and 1 the bottom edge.")]
+        float cursor_y = -1f,
         [Description("How long to wait for the whole thing, in milliseconds.")]
         int timeout_ms = 15000,
         [Description(UnityProjectTools.InstanceDescription)]
@@ -125,6 +135,10 @@ public static class UnityCaptureTools
             ["maxLongEdge"] = Math.Max(0, max_long_edge).ToString(),
             ["format"]      = string.IsNullOrWhiteSpace(format) ? "png" : format.Trim(),
             ["quality"]     = Math.Clamp(quality, 1, 100).ToString(),
+            ["cursor"]          = string.IsNullOrWhiteSpace(cursor) ? "none" : cursor.Trim(),
+            ["cursorControlId"] = cursor_control_id ?? "",
+            ["cursorX"]         = cursor_x.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["cursorY"]         = cursor_y.ToString(System.Globalization.CultureInfo.InvariantCulture),
         };
 
         var start = await CallEditorAsync(port, startArgs, Remaining(watch, deadline), cancellationToken)
@@ -150,6 +164,7 @@ public static class UnityCaptureTools
         string path   = string.Empty;
         string shotError = string.Empty;
         int polls = 0;
+        JsonObject? lastStatus = start.Result;
 
         while (!string.Equals(status, "completed", StringComparison.Ordinal)
             && !string.Equals(status, "failed",    StringComparison.Ordinal))
@@ -173,6 +188,7 @@ public static class UnityCaptureTools
             status    = Text(poll.Result, "status");
             path      = Text(poll.Result, "path");
             shotError = Text(poll.Result, "error");
+            lastStatus = poll.Result;
         }
 
         if (string.Equals(status, "failed", StringComparison.Ordinal))
@@ -218,6 +234,9 @@ public static class UnityCaptureTools
 
         var text = attachment!.Describe()
                  + $"\ntarget={target}; {watch.ElapsedMilliseconds}ms; {polls} status check(s)"
+                 + (lastStatus?["cursorInside"] is null
+                        ? string.Empty
+                        : $"\ncursor at ({lastStatus["cursorX"]}, {lastStatus["cursorY"]}) of the shot; inside={lastStatus["cursorInside"]}")
                  + (focusDetail.StartsWith("focus failed", StringComparison.Ordinal) ? $"\n{focusDetail}" : string.Empty)
                  + (advice.Length > 0 ? "\n" + advice : string.Empty);
 
