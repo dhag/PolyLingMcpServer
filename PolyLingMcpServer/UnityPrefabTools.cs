@@ -64,6 +64,7 @@ public static class UnityPrefabTools
         [Description("Fill missing required Humanoid joints with dummy objects. Default false.")] bool? supplement_humanoid = null,
         [Description("Write IK attachments to attach.csv next to the prefab. Default true.")] bool? write_attach = null,
         [Description("Tolerate objects under a mirror branch that lack their own mirror setting. Default true.")] bool? tolerant_mirror_branch = null,
+        [Description("Write the shape after modifiers under the original object's name. False writes the original mesh only. Default true.")] bool? apply_modifiers = null,
         [Description("Auto (skinned when the mesh has bone weights) or ForceMeshFilter. Default Auto.")] string? renderer_mode = null,
         [Description("Optional Animator Controller asset path under Assets/ to set on the root Animator.")] string? animator_controller = null,
         [Description("How long to wait for the whole thing, including stopping Play mode, in milliseconds.")] int timeout_ms = 300_000,
@@ -83,6 +84,7 @@ public static class UnityPrefabTools
         AddBool  (p, "supplementHumanoid",        supplement_humanoid);
         AddBool  (p, "writeAttach",               write_attach);
         AddBool  (p, "tolerantMirrorBranch",      tolerant_mirror_branch);
+        AddBool  (p, "applyModifiers",            apply_modifiers);
         AddString(p, "rendererMode",              renderer_mode);
         AddString(p, "animatorController",        animator_controller);
 
