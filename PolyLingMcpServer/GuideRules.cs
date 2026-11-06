@@ -92,7 +92,7 @@ public static class GuideRules
         Refresh();
         var data = _loaded;
 
-        var session = Sessions.GetOrAdd(string.IsNullOrEmpty(sessionKey) ? "stdio" : sessionKey, _ => new SessionGuide());
+        var session = Sessions.GetOrAdd(sessionKey, _ => new SessionGuide());
         var argsText = ArgumentsText(arguments);
         var notes = new List<string>();
 

@@ -3,12 +3,23 @@
 Console MCP server for working on a Unity project from an MCP client: reading and
 editing source files, driving the Unity Editor, and issuing PolyLing commands.
 
-The executable is headless. By default Claude Desktop launches it as a child process and
-talks to it over stdin/stdout, so there is no window and no listening port.
-stdout is the JSON-RPC channel; all diagnostics and the activity log go to stderr.
+The executable is headless. stdout is the JSON-RPC channel; all diagnostics and the activity
+log go to stderr. What opens depends on the arguments and on how the process was started:
 
-With `--http <port>` it instead listens on `127.0.0.1:<port>` for Streamable HTTP and
-serves a browser client on the same port (see [HTTP mode](#http-mode)).
+| stdin | Arguments | Open |
+|---|---|---|
+| redirected (started by Claude Desktop) | none needed | stdio and HTTP in one process, on port 8771 or `--http <port>` |
+| redirected | `--no-http` | stdio only |
+| console (started from a terminal) | `--http <port>` | HTTP only |
+| console | no `--http` | stdio only |
+
+HTTP listens on `127.0.0.1:<port>` for Streamable HTTP and serves a browser client on the same
+port (see [HTTP mode](#http-mode)).
+
+When both are open, stdio is the main one: when the client closes stdin, HTTP stops and the
+process exits. If HTTP cannot open (for example the port is taken by a server started from a
+terminal), the error goes to stderr and stdio carries on. Starting it from something that gives
+an empty stdin (`< NUL`) therefore exits at once; to run HTTP alone, start it from a terminal.
 
 ## Requirements
 
@@ -32,8 +43,8 @@ PolyLingMcpServer.exe --project <unity-project-folder> [--editable <folder>] ...
   unknown root stops startup.
 - `--unity-log` defaults to `%LOCALAPPDATA%\Unity\Editor\Editor.log`. Set it only when
   Unity is started with `-logFile`.
-- `--http` switches from stdio to Streamable HTTP on `127.0.0.1:<port>`. A value that is not
-  a port number 1-65535 stops startup.
+- `--http` opens Streamable HTTP on `127.0.0.1:<port>` (see the table above). A value that is
+  not a port number 1-65535 stops startup.
 - `--guide <folder>` is the AI guide data (`primer.md`, `hints.txt`). Default
   `<project>/Packages/com.haglib.polyling/McpGuide`. `primer.md` is appended to the first tool
   result of each session (and to the initialize instructions); each rule in `hints.txt`
@@ -48,7 +59,7 @@ PolyLingMcpServer.exe --project <unity-project-folder> [--editable <folder>] ...
   `delete_path`, `compile` / `get_compile_errors`, `unity_play` / `unity_stop` /
   `unity_refresh` / `unity_recompile`, `unity_validate_changes` and `read_unity_log`.
   `unity_prefab_export` / `unity_prefab_instantiate` / `unity_prefab_import` /
-  `unity_prefab_add_component` stay visible and
+  `unity_prefab_add_component` and `unity_scene_call` stay visible and
   always go to the Editor on 8770, so files made in a build can still become prefabs while the
   Editor is open. `sendHierarchyBundle` (through `polyling_call`) also works from a build.
 - `--capture-folder` is where `unity_capture` saves, and the folder filled in when `uiCapture`
@@ -97,6 +108,7 @@ must be on one machine: it binds `127.0.0.1` only.
 | `/` | The browser client, `WebClient/index.html`, embedded in the executable |
 | `/mcp` | The MCP endpoint (Streamable HTTP, protocol `2026-07-28`, stateless) |
 | `/openai/v1/responses` (POST), `/openai/v1/models` (GET) | Relay to `https://api.openai.com/v1/…` for the browser client |
+| `/google/v1beta/interactions` (POST), `/google/v1beta/models` (GET) | Relay to `https://generativelanguage.googleapis.com/v1beta/…` for the browser client |
 
 - **Same origin, no CORS.** The page and `/mcp` share one origin, so nothing is configured
   for cross-origin access.
@@ -123,6 +135,15 @@ must be on one machine: it binds `127.0.0.1` only.
   `cacheReadTokens` is `input_tokens_details.cached_tokens` and is subtracted from
   `inputTokens`; `cacheWriteTokens` is `input_tokens_details.cache_write_tokens` and is **not**
   subtracted, because whether `input_tokens` includes it was not confirmed.
+- **The Google API goes through this server too.** Choosing `Google` switches to the Gemini
+  Interactions API (`/v1beta`, a beta version). Same reason as OpenAI: calling it straight from a
+  browser could not be confirmed. The relay forwards the browser's `x-goog-api-key` header and
+  the query string; the key is not stored. Requests are sent with `store: false` (the API stores
+  by default), and the returned steps (thought with its signature, model output, function calls)
+  go back as the next input. Tools and the system instruction are sent on every request. File
+  attachments and the cache checkbox are Anthropic only. In the CSV, `outputTokens` is
+  `total_tokens` minus `total_input_tokens`, so it includes thinking, and `inputTokens` has
+  `total_cached_tokens` subtracted.
 - **Tool calls run without confirmation**, including `write_file`, `apply_patch`,
   `write_binary` and `delete_path`. The editable folders are the limit, exactly as in stdio
   mode. One send stops after 30 model/tool round trips (`MAX_TOOL_ROUNDS` in the page).

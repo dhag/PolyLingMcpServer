@@ -75,9 +75,11 @@
   <label>API<select id="provider" autocomplete="off">
     <option value="anthropic">Anthropic</option>
     <option value="openai">OpenAI</option>
+    <option value="google">Google</option>
   </select></label>
   <label id="apiKeyLabel">Anthropic API キー<input id="apiKey" type="password" autocomplete="off" spellcheck="false"></label>
   <label id="openaiKeyLabel" hidden>OpenAI API キー<input id="openaiKey" type="password" autocomplete="off" spellcheck="false"></label>
+  <label id="googleKeyLabel" hidden>Google API キー<input id="googleKey" type="password" autocomplete="off" spellcheck="false"></label>
   <button id="keyFile" class="ghost" title="キーを書いたテキストファイルを選ぶ。キー欄かこのボタンへドロップしてもよい。最初の空でない行をキーにする">キーファイル</button>
   <input id="keyFileInput" type="file" accept=".txt,text/plain" hidden>
   <label>モデル<input id="model" list="models" value="claude-sonnet-5" spellcheck="false"></label>
@@ -89,6 +91,9 @@
   <!-- OpenAI のモデル名はコードに固定しない。「モデル一覧」で /v1/models から取る。 -->
   <datalist id="openaiModels"></datalist>
   <button id="openaiModelsLoad" class="ghost" hidden title="OpenAI の /v1/models からモデル名の候補を取る">モデル一覧</button>
+  <!-- Google のモデル名もコードに固定しない。「モデル一覧」で /v1beta/models から取る。 -->
+  <datalist id="googleModels"></datalist>
+  <button id="googleModelsLoad" class="ghost" hidden title="Google の /v1beta/models からモデル名の候補を取る">モデル一覧</button>
   <label>max_tokens<input id="maxTokens" type="number" min="1" value="4096"></label>
   <button id="connect" class="ghost">MCP サーバに接続</button>
   <button id="clear" class="ghost">会話をクリア</button>
@@ -149,11 +154,20 @@ const ANTHROPIC_VERSION = "2023-06-01";
 const OPENAI_RESPONSES_URL = "/openai/v1/responses";
 const OPENAI_MODELS_URL = "/openai/v1/models";
 
+// Google も同じ中継を通す（Program.cs の MapGoogleRelay）。ブラウザから直接呼べるかは資料で確認できなかった。
+// 中継は API キーを保存せず、ブラウザが付けた x-goog-api-key ヘッダをそのまま渡す。
+const GOOGLE_INTERACTIONS_URL = "/google/v1beta/interactions";
+const GOOGLE_MODELS_URL = "/google/v1beta/models";
+
 // Responses API の max_output_tokens の下限（API リファレンス: minimum 16）。
 const OPENAI_MIN_OUTPUT_TOKENS = 16;
 
 // 表示名。画面の発言者と CSV の provider 列に使う。
-const PROVIDER_LABEL = { anthropic: "claude", openai: "openai" };
+const PROVIDER_LABEL = { anthropic: "claude", openai: "openai", google: "google" };
+
+// API ごとのキー欄。
+const KEY_INPUT = { anthropic: "apiKey", openai: "openaiKey", google: "googleKey" };
+const KEY_NAME = { apiKey: "Anthropic", openaiKey: "OpenAI", googleKey: "Google" };
 
 // 1 回の送信でモデルとツールを往復する上限。暴走したときに API キーの利用額を食い潰さないための止め。
 const MAX_TOOL_ROUNDS = 30;
@@ -172,12 +186,13 @@ const OPENAI_TOOL_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
 let mcpTools = [];          // tools/list の結果（x-mcp-header 検証を通ったもの）
 let anthropicTools = [];    // Anthropic に渡す tools
 let openaiTools = [];       // OpenAI Responses API に渡す tools（type:"function"）
+let googleTools = [];       // Google Interactions API に渡す tools（type:"function"）
 let serverInstructions = ""; // server/discover の instructions（あれば system / instructions に入れる）
-// 会話履歴。形は provider で違う（Anthropic は messages、OpenAI は Responses API の input 項目）。
+// 会話履歴。形は provider で違う（Anthropic は messages、OpenAI は Responses API の input 項目、Google は Interactions API の step）。
 // 互いに変換すると推論の途中経過などが失われるので、API を切り替えたら消す。
 let messages = [];
 let provider = "anthropic";
-const modelByProvider = { anthropic: "claude-sonnet-5", openai: "" };
+const modelByProvider = { anthropic: "claude-sonnet-5", openai: "", google: "" };
 let rpcId = 0;
 let busy = false;
 let abortController = null;
@@ -238,6 +253,21 @@ function showTaskStatus() {
  */
 function normalizeUsage(u) {
   u = u || {};
+  if (provider === "google") {
+    // Google の total_input_tokens はキャッシュ読込（total_cached_tokens）を含むものとして引く（資料では未確認）。
+    // 出力は推論（total_thought_tokens）を含めたいが、total_output_tokens に含まれるかが資料で確認できない。
+    // 全体（total_tokens）から入力を引けば、どちらの場合でも推論込みの数になる。
+    const cached = u.total_cached_tokens ?? 0;
+    const inputAll = u.total_input_tokens ?? 0;
+    return {
+      input: Math.max(0, inputAll - cached),
+      output: u.total_tokens !== undefined
+        ? Math.max(0, u.total_tokens - inputAll)
+        : (u.total_output_tokens ?? 0) + (u.total_thought_tokens ?? 0),
+      cacheWrite: 0,
+      cacheRead: cached
+    };
+  }
   if (provider === "openai") {
     const d = u.input_tokens_details || {};
     const cached = d.cached_tokens ?? 0;
@@ -258,7 +288,7 @@ function normalizeUsage(u) {
 
 /** いまの API へ渡している道具定義。 */
 function currentToolDefs() {
-  return provider === "openai" ? openaiTools : anthropicTools;
+  return provider === "openai" ? openaiTools : provider === "google" ? googleTools : anthropicTools;
 }
 
 /** 応答を受け取った時点で 1 行記録する（中止しても費用は掛かっているため）。行を返す。 */
@@ -580,6 +610,7 @@ async function loadTools() {
   mcpTools = [];
   anthropicTools = [];
   openaiTools = [];
+  googleTools = [];
   for (const tool of tools) {
     const check = collectMcpHeaders(tool.inputSchema);
     if (!check.ok) {
@@ -604,6 +635,10 @@ async function loadTools() {
     const fn = { type: "function", name: tool.name, parameters: tool.inputSchema, strict: false };
     if (tool.description) fn.description = tool.description;
     openaiTools.push(fn);
+
+    const gfn = { type: "function", name: tool.name, parameters: tool.inputSchema };
+    if (tool.description) gfn.description = tool.description;
+    googleTools.push(gfn);
   }
 }
 
@@ -825,7 +860,9 @@ async function callClaude(signal) {
 }
 
 function runTurn(userText, files) {
-  return provider === "openai" ? runTurnOpenAI(userText) : runTurnAnthropic(userText, files);
+  if (provider === "openai") return runTurnOpenAI(userText);
+  if (provider === "google") return runTurnGoogle(userText);
+  return runTurnAnthropic(userText, files);
 }
 
 async function runTurnAnthropic(userText, files = []) {
@@ -1100,18 +1137,227 @@ async function loadOpenAIModels() {
   addInfo(`OpenAI のモデル候補 ${ids.length} 件`);
 }
 
+// ---------------------------------------------------------------------------
+// Google Interactions API
+// ---------------------------------------------------------------------------
+//
+// 会話は step の配列（messages）で持つ。store:false で送り、サーバ側に会話を残さない
+// （既定は保存される）。応答の steps（thought / model_output / function_call）は、
+// そのまま次の要求の input に戻す。thought の signature もこれで戻る。
+// 道具・システム指示は会話をまたいで残らないので、毎回送る。
+
+/** MCP の結果 → function_result。画像は image にする。 */
+function toFunctionResult(call, result) {
+  const parts = [];
+  for (const c of result.content || []) {
+    switch (c.type) {
+      case "text":
+        if (c.text) parts.push({ type: "text", text: c.text });
+        break;
+      case "image":
+        parts.push({ type: "image", data: c.data, mime_type: c.mimeType });
+        break;
+      case "resource":
+        parts.push({
+          type: "text",
+          text: typeof c.resource?.text === "string" && c.resource.text
+            ? c.resource.text
+            : `[resource ${c.resource?.uri ?? ""} ${c.resource?.mimeType ?? ""}（バイナリは渡していない）]`
+        });
+        break;
+      default:
+        parts.push({ type: "text", text: JSON.stringify({ ...c, data: c.data ? `(${c.data.length} chars omitted)` : undefined }) });
+    }
+  }
+  if (parts.length === 0 && result.structuredContent !== undefined) {
+    parts.push({ type: "text", text: JSON.stringify(result.structuredContent) });
+  }
+  if (parts.length === 0) parts.push({ type: "text", text: "(no content)" });
+  return {
+    type: "function_result",
+    name: call.name,
+    call_id: call.id,
+    ...(result.isError ? { is_error: true } : {}),
+    result: parts
+  };
+}
+
+/** 道具を呼べなかったときの function_result。 */
+function googleErrorResult(call, message) {
+  return {
+    type: "function_result",
+    name: call.name,
+    call_id: call.id,
+    is_error: true,
+    result: [{ type: "text", text: "ERROR: " + message }]
+  };
+}
+
+/**
+ * 履歴圧縮（Google 版）。1 回の往復で返した function_result は連続して並ぶので、その連なりを 1 往復と数え、
+ * 直近 keep 往復より古いものの本文を短い文に置き換えた写しを返す。call_id は残す。
+ */
+function compactGoogleSteps(src, keep) {
+  const runs = [];
+  let inRun = false;
+  src.forEach((step, i) => {
+    const isResult = step.type === "function_result";
+    if (isResult && !inRun) runs.push([]);
+    if (isResult) runs[runs.length - 1].push(i);
+    inRun = isResult;
+  });
+  const cut = new Set(runs.slice(0, Math.max(0, runs.length - keep)).flat());
+  if (cut.size === 0) return src;
+
+  return src.map((step, i) => !cut.has(i) ? step : {
+    ...step,
+    result: [{ type: "text", text: `[省略: ${step.name ?? "tool"} の結果 ${utf8Bytes(JSON.stringify(step.result))} バイト]` }]
+  });
+}
+
+async function callGoogle(signal) {
+  const keep = compactKeep();
+  const body = {
+    model: $("model").value.trim(),
+    input: keep === null ? messages : compactGoogleSteps(messages, keep),
+    generation_config: { max_output_tokens: Number($("maxTokens").value) },
+    store: false
+  };
+  if (googleTools.length > 0) body.tools = googleTools;
+  if (serverInstructions) body.system_instruction = serverInstructions;
+
+  const payload = JSON.stringify(body);
+  lastRequestBytes = utf8Bytes(payload);
+
+  const response = await fetch(GOOGLE_INTERACTIONS_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-goog-api-key": $("googleKey").value.trim()
+    },
+    body: payload,
+    signal
+  });
+
+  const json = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = json?.error ? `${json.error.status ?? json.error.code ?? ""}: ${json.error.message}` : "(本文なし)";
+    throw new Error(`Google API: HTTP ${response.status} ${detail}`);
+  }
+  if (json?.error) throw new Error(`Google API: ${json.error.code ?? ""} ${json.error.message}`);
+  if (json?.status === "failed" || json?.status === "cancelled") {
+    throw new Error(`Google API: status ${json.status} ${JSON.stringify(json.errors ?? [])}`);
+  }
+  return json;
+}
+
+async function runTurnGoogle(userText) {
+  const historyLength = messages.length;
+  abortController = new AbortController();
+  const signal = abortController.signal;
+  setBusy(true);
+
+  messages.push({ type: "user_input", content: [{ type: "text", text: userText }] });
+  addMessage("user", userText);
+
+  try {
+    for (let round = 0; ; round++) {
+      if (round >= MAX_TOOL_ROUNDS) {
+        throw new Error(`ツール往復が上限 ${MAX_TOOL_ROUNDS} 回に達したので止めた`);
+      }
+
+      const reply = await callGoogle(signal);
+      const steps = reply.steps || [];
+      const calls = steps.filter(s => s.type === "function_call");
+      const incomplete = reply.status === "incomplete";
+      const stopReason = incomplete ? "incomplete" : (calls.length > 0 ? "function_call" : (reply.status ?? ""));
+
+      // 打ち切られた応答の function_call は実行しないので数えない。
+      const roundRow = recordRound(reply, stopReason, incomplete ? 0 : calls.length);
+
+      for (const step of steps) {
+        if (step.type !== "model_output") continue;
+        for (const c of step.content || []) if (c.type === "text" && c.text) addMessage("assistant", c.text);
+      }
+
+      if (incomplete || calls.length === 0) {
+        // 打ち切られた function_call は実行しない。対応する結果が無いまま履歴に残さない。
+        messages.push(...steps.filter(s => s.type !== "function_call"));
+        if (incomplete) addInfo("status: incomplete");
+        else if (reply.status && reply.status !== "completed") addInfo(`status: ${reply.status}`);
+        break;
+      }
+
+      messages.push(...steps);
+
+      const results = [];
+      for (const call of calls) {
+        const args = call.arguments ?? {};
+        const view = addToolCall(call.name, args);
+        try {
+          const result = await mcpCallTool(call.name, args, signal);
+          results.push(toFunctionResult(call, result));
+          fillToolResult(view, result, null);
+        } catch (e) {
+          if (signal.aborted) throw e;
+          results.push(googleErrorResult(call, String(e.message || e)));
+          fillToolResult(view, null, e);
+        }
+      }
+      messages.push(...results);
+      addToolResultBytes(roundRow, utf8Bytes(JSON.stringify(results)));
+    }
+  } catch (e) {
+    // 途中で失敗した往復は履歴から外す。呼び出しと結果の対応が崩れた履歴は次の送信で拒否されるため。
+    messages.length = historyLength;
+    addError((signal.aborted ? "中止した" : String(e.message || e)) + "（この送信は会話履歴から外した）");
+  } finally {
+    abortController = null;
+    setBusy(false);
+  }
+}
+
+/** /v1beta/models（中継経由）でモデル名の候補を取る。文章生成に使えないもの（埋め込み用など）は外す。 */
+async function loadGoogleModels() {
+  const key = $("googleKey").value.trim();
+  if (!key) { addError("Google API キーが空"); return; }
+  const ids = [];
+  let pageToken = "";
+  do {
+    const query = "?pageSize=1000" + (pageToken ? "&pageToken=" + encodeURIComponent(pageToken) : "");
+    const response = await fetch(GOOGLE_MODELS_URL + query, { headers: { "x-goog-api-key": key } });
+    const json = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = json?.error ? json.error.message : "(本文なし)";
+      throw new Error(`Google /v1beta/models: HTTP ${response.status} ${detail}`);
+    }
+    for (const m of json?.models || []) {
+      if (typeof m.name !== "string") continue;
+      if (Array.isArray(m.supportedGenerationMethods) && !m.supportedGenerationMethods.includes("generateContent")) continue;
+      ids.push(m.name.replace(/^models\//, ""));
+    }
+    pageToken = json?.nextPageToken ?? "";
+  } while (pageToken);
+  ids.sort();
+  $("googleModels").replaceChildren(...ids.map(id => new Option("", id)));
+  addInfo(`Google のモデル候補 ${ids.length} 件`);
+}
+
 /** API を切り替える。履歴の形が違うので会話を消す。 */
 function setProvider(next) {
   if (next === provider) return;
   modelByProvider[provider] = $("model").value.trim();
   provider = next;
   const openai = provider === "openai";
-  $("apiKeyLabel").hidden = openai;
+  const google = provider === "google";
+  $("apiKeyLabel").hidden = openai || google;
   $("openaiKeyLabel").hidden = !openai;
+  $("googleKeyLabel").hidden = !google;
   $("openaiModelsLoad").hidden = !openai;
-  $("model").setAttribute("list", openai ? "openaiModels" : "models");
+  $("googleModelsLoad").hidden = !google;
+  $("model").setAttribute("list", openai ? "openaiModels" : google ? "googleModels" : "models");
   $("model").value = modelByProvider[provider];
-  $("useCache").disabled = openai;
+  $("useCache").disabled = openai || google;
   if (messages.length > 0) {
     messages = [];
     $("log").replaceChildren();
@@ -1220,6 +1466,7 @@ function setBusy(value) {
   $("taskStart").disabled = value;
   $("provider").disabled = value;
   $("openaiModelsLoad").disabled = value;
+  $("googleModelsLoad").disabled = value;
   $("scene").disabled = value || !mcpTools.some(t => t.name === "polyling_scenes");
   $("sceneReload").disabled = $("scene").disabled;
   $("taskOk").disabled = value || !currentTask;
@@ -1233,7 +1480,7 @@ $("connect").addEventListener("click", async () => {
     const { serverName, toolCount } = await mcpConnect();
     $("status").textContent = `接続済み: ${serverName} / ツール ${toolCount} 個 / MCP ${PROTOCOL_VERSION}`;
   } catch (e) {
-    mcpTools = []; anthropicTools = []; openaiTools = []; serverInstructions = ""; serverName = "";
+    mcpTools = []; anthropicTools = []; openaiTools = []; googleTools = []; serverInstructions = ""; serverName = "";
     $("status").textContent = "未接続";
     addError("MCP 接続失敗: " + (e.message || e));
   } finally {
@@ -1252,6 +1499,9 @@ $("provider").addEventListener("change", e => { if (!busy) setProvider(e.target.
 $("openaiModelsLoad").addEventListener("click", async () => {
   try { await loadOpenAIModels(); } catch (e) { addError(String(e.message || e)); }
 });
+$("googleModelsLoad").addEventListener("click", async () => {
+  try { await loadGoogleModels(); } catch (e) { addError(String(e.message || e)); }
+});
 
 $("taskStart").addEventListener("click", startTask);
 $("taskOk").addEventListener("click", () => endTask("success"));
@@ -1267,8 +1517,7 @@ function send() {
   const text = $("prompt").value.trim();
   if (!text && attachments.length === 0) return;
   if (attachments.length > 0 && provider !== "anthropic") { addError("ファイルの添付は Anthropic のときだけ送れる"); return; }
-  const keyInput = provider === "openai" ? "openaiKey" : "apiKey";
-  if (!$(keyInput).value.trim()) { addError("API キーが空"); return; }
+  if (!$(KEY_INPUT[provider]).value.trim()) { addError("API キーが空"); return; }
   if (!$("model").value.trim()) { addError("モデルが空"); return; }
   if (currentToolDefs().length === 0) addInfo("MCP 未接続（ツール無し）で送信する");
   $("prompt").value = "";
@@ -1352,11 +1601,11 @@ $("attachInput").addEventListener("change", async e => { await addAttachments([.
 
 /** 最初の空でない行をキーにする。inputId を省くと今の API のキー欄へ入れる。キーそのものは表示しない。 */
 async function loadKeyFile(file, inputId) {
-  const id = inputId ?? (provider === "openai" ? "openaiKey" : "apiKey");
+  const id = inputId ?? KEY_INPUT[provider];
   const line = (await file.text()).split(/\r?\n/).map(t => t.trim()).find(t => t !== "");
   if (!line) { addError(`${file.name} にキーが書かれていない`); return; }
   $(id).value = line;
-  addInfo(`${id === "openaiKey" ? "OpenAI" : "Anthropic"} の API キーを ${file.name} から読んだ`);
+  addInfo(`${KEY_NAME[id]} の API キーを ${file.name} から読んだ`);
 }
 
 $("keyFile").addEventListener("click", () => $("keyFileInput").click());
@@ -1375,7 +1624,7 @@ $("keyFileInput").addEventListener("change", async e => {
 
 function dropTargetOf(el) {
   if (!(el instanceof Element)) return null;
-  return el.closest("#apiKey, #openaiKey, #keyFile, #footer");
+  return el.closest("#apiKey, #openaiKey, #googleKey, #keyFile, #footer");
 }
 
 let dragTarget = null;

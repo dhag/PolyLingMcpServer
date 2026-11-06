@@ -23,7 +23,7 @@ public static class PathGuard
     /// write_file / apply_patch が書ける拡張子。
     /// .csv / .mqo はテキスト形式なので確認用のファイルを置けるよう加えた
     /// （write_file は UTF-8 で書く。MQO を日本語入りで書くときは write_binary で Shift_JIS のバイト列を渡す）。
-    /// .html / .js はモーションスタジオ（データとツール/VRMビュワー/polyling_motion_studio）の編集用。
+    /// .html / .js はモーションスタジオ（データとツール/ツール/VRMビュワー/polyling_motion_studio）の編集用。
     /// .unity はシーン内 GameObject のアクティブ等を直すため（YAML テキスト。Unity で開いているシーンは
     /// 書き換え後にエディタ側で再読込が要る）。
     /// </summary>

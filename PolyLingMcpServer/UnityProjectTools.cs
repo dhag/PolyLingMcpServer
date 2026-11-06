@@ -15,7 +15,7 @@ public static class UnityProjectTools
     /// 毎回読み込まれる道具の説明に要点を置く）。
     /// </summary>
     private const string LocalSourceNote =
-        " The source of this MCP server itself is in this project under データとツール/PolyLingMcpServer/PolyLingMcpServer/ and is editable here."
+        " The source of this MCP server itself is in this project under データとツール/ツール/PolyLingMcpServer/PolyLingMcpServer/ and is editable here."
         + " Always edit the local files directly with these tools; do not fetch sources from GitHub when the local copy exists."
         + " After the conversation has been summarized, re-read Packages/com.haglib.polyling/McpGuide/primer.md before continuing.";
 
@@ -741,7 +741,7 @@ public static class UnityProjectTools
     /// Nested objects and arrays are rejected here rather than silently dropped
     /// by the Editor's JsonParser.
     /// </summary>
-    private static Dictionary<string, string> FlattenArgs(string? args)
+    internal static Dictionary<string, string> FlattenArgs(string? args)
     {
         var result = new Dictionary<string, string>();
         if (string.IsNullOrWhiteSpace(args)) return result;

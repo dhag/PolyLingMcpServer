@@ -11,7 +11,7 @@
        想定配置: <プロジェクト>\Packages\ と <プロジェクト>\データとツール\PolyLingMcpServer\PolyLingMcpServer\
        配置が違う場合はこの 1 行だけ書き換える。 -->
   <PropertyGroup>
-    <PolyLingPackagesDir>..\..\..\Packages</PolyLingPackagesDir>
+    <PolyLingPackagesDir>..\..\..\..\Packages</PolyLingPackagesDir>
     <DuplexCoreDir>$(PolyLingPackagesDir)\com.haglib.net_duplexchannel\RunTime\Core</DuplexCoreDir>
   </PropertyGroup>
 

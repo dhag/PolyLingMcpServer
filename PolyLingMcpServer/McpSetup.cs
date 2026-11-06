@@ -32,7 +32,11 @@ namespace PolyLingMcpServer;
 /// </summary>
 public static class McpSetup
 {
-    public static IMcpServerBuilder AddPolyLingMcp(this IServiceCollection services, ServerState state)
+    /// <param name="transport">
+    /// 口の名前（stdio / http）。1 つのプロセスで両方を開いたとき、案内の「最初の 1 回」を
+    /// 口ごとに数えるために使う（セッション ID が無い要求が 1 つにまとまらないように）。
+    /// </param>
+    public static IMcpServerBuilder AddPolyLingMcp(this IServiceCollection services, ServerState state, string transport)
     {
         return services
             .AddMcpServer(options =>
@@ -54,7 +58,7 @@ public static class McpSetup
             .WithRequestFilters(filters =>
             {
                 filters.AddListToolsFilter(next => (request, ct) => ListFilter(state, next, request, ct));
-                filters.AddCallToolFilter(next => (request, ct) => CallFilter(state, next, request, ct));
+                filters.AddCallToolFilter(next => (request, ct) => CallFilter(state, transport, next, request, ct));
             });
     }
 
@@ -193,6 +197,7 @@ public static class McpSetup
 
     private static async ValueTask<CallToolResult> CallFilter(
         ServerState state,
+        string transport,
         McpRequestHandler<CallToolRequestParams, CallToolResult> next,
         RequestContext<CallToolRequestParams> request,
         CancellationToken cancellationToken)
@@ -242,7 +247,7 @@ public static class McpSetup
 
         // AI への案内（入門・きっかけ）を末尾に添える。計測の後に足すので、計測値は道具本体の量のまま。
         if (visible)
-            GuideRules.Decorate(request.Server?.SessionId ?? string.Empty, name, request.Params?.Arguments, result);
+            GuideRules.Decorate($"{transport}:{request.Server?.SessionId}", name, request.Params?.Arguments, result);
 
         return result;
     }

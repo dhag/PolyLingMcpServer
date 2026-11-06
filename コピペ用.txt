@@ -6,11 +6,11 @@ cd D:\UNITY保存の品\TEO3.0開発中\PolyLing\データとツール\PolyLingM
 (3)サーバーを起動する。UnityEditor用かランタイムビルド用で異なる
 
 UnityEditor用
-.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771
+.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;Assets;@settings;@mocopi" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --root "mocopi=D:\UNITY保存の品\TEO3.0開発中\PolyLing_mocopi" --http 8771
 
 
 ランタイムビルド用
-.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --target player --player-exe PolyLing
+.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;Assets;@settings;@mocopi" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --root "mocopi=D:\UNITY保存の品\TEO3.0開発中\PolyLing_mocopi" --http 8771 --target player --player-exe PolyLing
 
 
 (3)ブラウザは下記に飛ぶ
@@ -20,16 +20,16 @@ http://127.0.0.1:8771/
 
 ユニティエディタ用評価用A　　　　　　　サンドボックス_シナリオ用\MCPで自動生成\E
 
-.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe  --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --profile generic --metrics データとツール\サンドボックス_シナリオ用\MCPで自動生成\E\generic.jsonl
+.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe  --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;Assets;@settings;@mocopi" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --root "mocopi=D:\UNITY保存の品\TEO3.0開発中\PolyLing_mocopi" --http 8771 --profile generic --metrics データとツール\サンドボックス_シナリオ用\MCPで自動生成\E\generic.jsonl
 
 ユニティエディタ用評価用C　　　　　　　サンドボックス_シナリオ用\MCPで自動生成\E
 
-.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe  --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;Assets;@settings" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --http 8771 --profile optimized --metrics データとツール\サンドボックス_シナリオ用\MCPで自動生成\E\optimized.jsonl
+.\PolyLingMcpServer\bin\Debug\net8.0\PolyLingMcpServer.exe  --project "D:\UNITY保存の品\TEO3.0開発中\PolyLing" --editable "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;Assets;@settings;@mocopi" --root "settings=C:\Users\dhag\AppData\LocalLow\HagiharaLab" --root "mocopi=D:\UNITY保存の品\TEO3.0開発中\PolyLing_mocopi" --http 8771 --profile optimized --metrics データとツール\サンドボックス_シナリオ用\MCPで自動生成\E\optimized.jsonl
 
 
 
 ---------------------------------------------------
-クロードデスクトップのパラメータ
+クロードデスクトップのパラメータ（デスクトップの起動中は http://127.0.0.1:8771/ も自動で開く。上のコンソール起動は不要。開きたくなければ --no-http）
 
 UnityEditor用
 
@@ -40,9 +40,9 @@ UnityEditor用
         "--project",
         "D:\\UNITY保存の品\\TEO3.0開発中\\PolyLing",
         "--root",
-        "settings=C:\\Users\\dhag\\AppData\\LocalLow\\HagiharaLab",
+        "settings=C:\\Users\\dhag\\AppData\\LocalLow\\HagiharaLab", "--root", "mocopi=D:\\UNITY保存の品\\TEO3.0開発中\\PolyLing_mocopi",
         "--editable",
-        "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;Assets;@settings"
+        "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;Assets;@settings;@mocopi"
       ]
     }
   },
@@ -58,9 +58,9 @@ UnityEditor用
         "--project",
         "D:\\UNITY保存の品\\TEO3.0開発中\\PolyLing",
         "--root",
-        "settings=C:\\Users\\dhag\\AppData\\LocalLow\\HagiharaLab",
+        "settings=C:\\Users\\dhag\\AppData\\LocalLow\\HagiharaLab", "--root", "mocopi=D:\\UNITY保存の品\\TEO3.0開発中\\PolyLing_mocopi",
         "--editable",
-        "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;Assets;@settings"
+        "Packages/com.haglib.polyling;Packages/com.haglib.net_duplexchannel;SandBox;データとツール;Assets;@settings;@mocopi"
 ,
     "--target", "player",
     "--player-exe", "PolyLing"

@@ -72,6 +72,6 @@ public static class TargetRules
     public static string InstructionsSuffix(ServerTarget target) => target == ServerTarget.Player
         ? " This server is connected to a built PolyLing player, not the Unity Editor: "
           + "source files, compiling and Play mode control are unavailable. "
-          + "unity_prefab_export / unity_prefab_instantiate / unity_prefab_import / unity_prefab_add_component still go to the Unity Editor if it is open."
+          + "unity_prefab_export / unity_prefab_instantiate / unity_prefab_import / unity_prefab_add_component and unity_scene_call still go to the Unity Editor if it is open."
         : string.Empty;
 }

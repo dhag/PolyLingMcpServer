@@ -12,10 +12,13 @@ namespace PolyLingMcpServer;
 
 internal static class Program
 {
-    // 起動方法は 2 つ。
-    //   既定      : Claude Desktop が子プロセスとして起動し、stdin/stdout で話す（stdio）。
-    //   --http <port> : 127.0.0.1:<port> で Streamable HTTP を待ち受け、
-    //                   同じポートの / でブラウザ用クライアント（WebClient/MCP_Client.html）を返す。
+    // 起動引数はどこから起動しても同じでよい。開く口は次のとおり決まる。
+    //   入力が端末以外（Claude Desktop が子プロセスとして起動した場合）: stdio と HTTP を同時に開く。
+    //       ポートは --http <port>、省略時は DefaultHttpPort。--no-http なら stdio だけ。
+    //   入力が端末・--http <port> : HTTP だけ。
+    //   入力が端末・--http なし   : stdio だけ。
+    // HTTP は 127.0.0.1:<port> で Streamable HTTP を待ち受け、
+    // 同じポートの / でブラウザ用クライアント（WebClient/MCP_Client.html）を返す。
     // Unknown arguments, including a legacy --stdio, are ignored by the option parsers below.
     static int Main(string[] args) => Run(args).GetAwaiter().GetResult();
 
@@ -24,6 +27,9 @@ internal static class Program
 
     /// <summary>HTTP モードの MCP エンドポイント。WebClient/MCP_Client.html の MCP_ENDPOINT と一致させる。</summary>
     private const string McpEndpointPath = "/mcp";
+
+    /// <summary>MCP クライアントの子プロセスとして起動され、--http の指定が無いときのポート。</summary>
+    private const int DefaultHttpPort = 8771;
 
     private static async Task<int> Run(string[] args)
     {    // Windows では、リダイレクトされた stderr の既定エンコーディングがシステムの
@@ -106,8 +112,12 @@ internal static class Program
                 + "  --unity-editor  Unity.exe that unity_editor_launch tries first. Without it, the version in\n"
                 + "             ProjectSettings/ProjectVersion.txt is looked up in the Unity Hub install folders.\n"
                 + "  --http     serves Streamable HTTP on 127.0.0.1:<port>" + McpEndpointPath + " and the browser client on /.\n"
-                + "             It also relays /openai/v1/responses and /openai/v1/models to api.openai.com for the browser client.\n"
-                + "             Without it the server talks over stdin/stdout.\n"
+                + "             It also relays /openai/v1/responses and /openai/v1/models to api.openai.com, and\n"
+                + "             /google/v1beta/interactions and /google/v1beta/models to the Gemini API, for the browser client.\n"
+                + "             With a console stdin, --http opens HTTP only and no --http opens stdio only.\n"
+                + "             With a redirected stdin (started by an MCP client such as Claude Desktop), both are open,\n"
+                + "             on port " + DefaultHttpPort + " unless --http says otherwise; if the port is taken, stdio only.\n"
+                + "  --no-http  with a redirected stdin, opens stdio only.\n"
                 + "  --profile  which tool set to expose, for comparing costs (default optimized):\n"
                 + "             generic   = one MCP tool per PolyLing command (pl_<command>)\n"
                 + "             current   = polyling_tools + polyling_call, as before\n"
@@ -139,6 +149,10 @@ internal static class Program
                 return 2;
             }
             httpPort = port;
+        }
+        else if (Console.IsInputRedirected && !HasOption(args, "--no-http"))
+        {
+            httpPort = DefaultHttpPort;
         }
 
         var profile = ServerProfile.Optimized;
@@ -264,12 +278,52 @@ internal static class Program
         HagLib.NET.Duplex.PipeDuplexChannel.DiagnosticLog = line => Console.Error.WriteLine(line);
         HagLib.NET.Duplex.PipeDuplexServer.DiagnosticLog  = line => Console.Error.WriteLine(line);
 
-        if (httpPort is int httpPortValue)
-            await RunHttp(state, httpPortValue);
-        else
+        if (httpPort is not int httpPortValue)
             await RunStdio(state);
+        else if (Console.IsInputRedirected)
+            await RunStdioAndHttp(state, httpPortValue);
+        else
+            await RunHttp(state, httpPortValue);
 
         return 0;
+    }
+
+    /// <summary>
+    /// MCP クライアントの子プロセスとして起動されたとき、stdio と HTTP を同じプロセスで開く。
+    ///
+    /// 主は stdio。クライアントが stdin を閉じたら HTTP も止めてプロセスを終える
+    /// （残すとクライアントの終了後も exe がロックされ、ポートも塞がったままになる）。
+    /// HTTP が開けなくても（別のサーバがポートを使用中など）stdio は続ける。
+    /// クライアントにとって必要な口は stdio だけだからである。
+    /// </summary>
+    private static async Task RunStdioAndHttp(ServerState state, int port)
+    {
+        using var stopHttp = new CancellationTokenSource();
+
+        var httpTask = Task.Run(async () =>
+        {
+            try
+            {
+                await RunHttp(state, port, stopHttp.Token);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"http: not available on port {port}, continuing with stdio only: {ex.Message}");
+            }
+        });
+
+        await RunStdio(state);
+
+        stopHttp.Cancel();
+        try
+        {
+            // 処理中の HTTP 要求を待ち続けて、プロセスの終了を遅らせない。
+            await httpTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (TimeoutException)
+        {
+            Console.Error.WriteLine("http: did not stop within 5 seconds; exiting anyway.");
+        }
     }
 
     private static async Task RunStdio(ServerState state)
@@ -284,7 +338,7 @@ internal static class Program
         builder.Services.AddSingleton(state);
         builder.Services.AddSingleton(UiDispatcher.ForStandardError());
         builder.Services
-            .AddPolyLingMcp(state)
+            .AddPolyLingMcp(state, "stdio")
             .WithStdioServerTransport()
             .WithToolsFromAssembly(typeof(UnityProjectTools).Assembly);
 
@@ -303,7 +357,7 @@ internal static class Program
     ///   道具は ServerState / UiDispatcher 以外に状態を持たず、EditorControlClient も呼び出しごとに
     ///   接続するので、セッションを必要としない。
     /// </summary>
-    private static async Task RunHttp(ServerState state, int port)
+    private static async Task RunHttp(ServerState state, int port, CancellationToken cancellationToken = default)
     {
         var builder = WebApplication.CreateBuilder();
 
@@ -316,7 +370,7 @@ internal static class Program
         builder.Services.AddSingleton(state);
         builder.Services.AddSingleton(UiDispatcher.ForStandardError());
         builder.Services
-            .AddPolyLingMcp(state)
+            .AddPolyLingMcp(state, "http")
             .WithHttpTransport()
             .WithToolsFromAssembly(typeof(UnityProjectTools).Assembly);
 
@@ -371,10 +425,11 @@ internal static class Program
 
         app.MapMcp(McpEndpointPath);
         MapOpenAiRelay(app);
+        MapGoogleRelay(app);
 
         await Console.Error.WriteLineAsync($"http: http://127.0.0.1:{port}/  (MCP endpoint {McpEndpointPath})");
 
-        await app.RunAsync();
+        await app.RunAsync(cancellationToken);
     }
 
     /// <summary>--capture-folder を省いたときの保存先（プロジェクト相対）。</summary>
@@ -449,7 +504,7 @@ internal static class Program
     private const string OpenAiUpstream = "https://api.openai.com/v1/";
 
     /// <summary>推論の長い応答を待つため、既定の 100 秒より長くする。</summary>
-    private static readonly HttpClient OpenAiHttp = new() { Timeout = TimeSpan.FromMinutes(10) };
+    private static readonly HttpClient RelayHttp = new() { Timeout = TimeSpan.FromMinutes(10) };
 
     private static void MapOpenAiRelay(WebApplication app)
     {
@@ -457,19 +512,46 @@ internal static class Program
         app.MapGet("/openai/v1/models", context => RelayToOpenAi(context, HttpMethod.Get, "models"));
     }
 
-    private static async Task RelayToOpenAi(HttpContext context, HttpMethod method, string path)
+    private static Task RelayToOpenAi(HttpContext context, HttpMethod method, string path)
+        => Relay(context, method, OpenAiUpstream + path, "Authorization", "api.openai.com");
+
+    // ================================================================
+    // Google API の中継（HTTP モードのみ）
+    // ================================================================
+    //
+    // ブラウザ用クライアントが Google の Interactions API を使うための経路。
+    // ブラウザから直接呼べるか（CORS）は資料で確認できなかったので、OpenAI と同じくこのサーバを通す。
+    //
+    //   POST /google/v1beta/interactions → https://generativelanguage.googleapis.com/v1beta/interactions
+    //   GET  /google/v1beta/models       → https://generativelanguage.googleapis.com/v1beta/models
+    //
+    // API キーは保存しない。ブラウザが付けた x-goog-api-key ヘッダをそのまま渡すだけ。
+    // クエリ（モデル一覧のページ送り）はそのまま渡す。
+
+    private const string GoogleUpstream = "https://generativelanguage.googleapis.com/v1beta/";
+
+    private static void MapGoogleRelay(WebApplication app)
     {
-        var authorization = context.Request.Headers.Authorization.ToString();
-        if (authorization.Length == 0)
+        app.MapPost("/google/v1beta/interactions", context =>
+            Relay(context, HttpMethod.Post, GoogleUpstream + "interactions" + context.Request.QueryString, "x-goog-api-key", "generativelanguage.googleapis.com"));
+        app.MapGet("/google/v1beta/models", context =>
+            Relay(context, HttpMethod.Get, GoogleUpstream + "models" + context.Request.QueryString, "x-goog-api-key", "generativelanguage.googleapis.com"));
+    }
+
+    /// <summary>1 つの要求を外部の API へ渡し、応答をそのまま返す。キーのヘッダが無ければ外へ出さずに 401。</summary>
+    private static async Task Relay(HttpContext context, HttpMethod method, string upstreamUrl, string keyHeader, string upstreamName)
+    {
+        var key = context.Request.Headers[keyHeader].ToString();
+        if (key.Length == 0)
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             context.Response.ContentType = "application/json; charset=utf-8";
-            await context.Response.WriteAsync("{\"error\":{\"message\":\"Authorization header is missing.\"}}");
+            await context.Response.WriteAsync($"{{\"error\":{{\"message\":\"{keyHeader} header is missing.\"}}}}");
             return;
         }
 
-        using var request = new HttpRequestMessage(method, OpenAiUpstream + path);
-        request.Headers.TryAddWithoutValidation("Authorization", authorization);
+        using var request = new HttpRequestMessage(method, upstreamUrl);
+        request.Headers.TryAddWithoutValidation(keyHeader, key);
 
         if (method == HttpMethod.Post)
         {
@@ -482,16 +564,17 @@ internal static class Program
         HttpResponseMessage response;
         try
         {
-            response = await OpenAiHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, context.RequestAborted);
+            response = await RelayHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, context.RequestAborted);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             if (context.RequestAborted.IsCancellationRequested) return; // ブラウザ側が中止した
-            await Console.Error.WriteLineAsync($"openai relay {path}: {ex.Message}");
+            // URL はキーを含まない（キーはヘッダ）。
+            await Console.Error.WriteLineAsync($"relay {upstreamName}: {ex.Message}");
             context.Response.StatusCode = StatusCodes.Status502BadGateway;
             context.Response.ContentType = "application/json; charset=utf-8";
             await context.Response.WriteAsync(
-                System.Text.Json.JsonSerializer.Serialize(new { error = new { message = "relay to api.openai.com failed: " + ex.Message } }));
+                System.Text.Json.JsonSerializer.Serialize(new { error = new { message = $"relay to {upstreamName} failed: " + ex.Message } }));
             return;
         }
 
