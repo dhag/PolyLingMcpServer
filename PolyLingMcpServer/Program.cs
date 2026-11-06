@@ -47,6 +47,14 @@ internal static class Program
         // （MQO は Shift_JIS で書かれている）。
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
+        // 置き場所の設定（exe のフォルダから親へたどった ProjectLayout.json、無ければ既定値）。
+        // 使い方の文言にも出すので最初に読む。
+        if (!ProjectLayout.Load(out var layoutError))
+        {
+            await Console.Error.WriteLineAsync("ERROR: " + ProjectLayout.FileName + " " + layoutError);
+            return 2;
+        }
+
         // 計測ログの集計だけを行う（MCP サーバとしては起動しない）。--summarize-metrics の後ろの引数を全部 JSONL として読む。
         int summarizeAt = Array.FindIndex(args, a => string.Equals(a, "--summarize-metrics", StringComparison.OrdinalIgnoreCase));
         if (summarizeAt >= 0)
@@ -99,11 +107,13 @@ internal static class Program
                 + "             source, compile, Play mode and Editor.log tools are hidden, --project may be omitted,\n"
                 + "             and unity_prefab_* still go to the Unity Editor.\n"
                 + "  --capture-folder  where unity_capture saves, and the folder filled in when uiCapture is called without one.\n"
-                + "             Project-relative, @<name>[/sub], or absolute. Default " + DefaultCaptureFolder + ".\n"
+                + "             Project-relative, @<name>[/sub], or absolute. Default " + ProjectLayout.Current.CaptureFolder + ".\n"
                 + "             With --target player and no --project it must be absolute, and it is the only folder read_image can read.\n"
                 + "  --player-exe  process name (without .exe) that unity_focus brings to the front when --target player.\n"
                 + "  --guide    folder of the AI guide data (primer.md, hints.tsv) added to tool results.\n"
-                + "             Default <project>/Packages/com.haglib.polyling/McpGuide. Re-read when the files change.\n"
+                + "             Default <project>/" + ProjectLayout.Current.GuideFolder + ". Re-read when the files change.\n"
+                + "  Folder names the server assumes (data folder, sandboxes, capture, trash, guide, build configuration)\n"
+                + "             come from " + ProjectLayout.FileName + ", searched from the exe folder upward; built-in defaults if none.\n"
                 + "  --editable may be repeated, or given once as a ';'-separated list.\n"
                 + "             Each item is a project-relative folder, or @<name>[/sub] for a --root folder.\n"
                 + "  --root     adds a readable folder outside the project, addressed as @<name>/path.\n"
@@ -249,6 +259,8 @@ internal static class Program
         // 起動時に一度だけ出す。どこまで届くのかを stderr のログで確かめられるようにする。
         await Console.Error.WriteLineAsync($"target: {TargetRules.Name(state.Target)} ({EditorControlClient.Endpoint})");
         await Console.Error.WriteLineAsync($"capture folder: {state.CaptureFolder}");
+        await Console.Error.WriteLineAsync(
+            $"layout: {(ProjectLayout.SourceFile.Length == 0 ? "(built-in defaults)" : ProjectLayout.SourceFile)}");
 
         // AI への案内データ（GuideRules）。--guide で変えられる。無ければプロジェクトの既定の置き場。
         // フォルダが無くても止めない（案内が出ないだけ）。
@@ -432,15 +444,12 @@ internal static class Program
         await app.RunAsync(cancellationToken);
     }
 
-    /// <summary>--capture-folder を省いたときの保存先（プロジェクト相対）。</summary>
-    private const string DefaultCaptureFolder = "SandBox/Captures";
-
     /// <summary>
     /// --capture-folder を絶対パスにし、無ければ作る。
     ///   絶対パス           … そのまま
     ///   @名前[/以下]       … その --root の中
     ///   それ以外           … プロジェクト相対（プロジェクトが無ければ失敗）
-    /// 省いたときはプロジェクト相対の DefaultCaptureFolder。
+    /// 省いたときはプロジェクト相対の ProjectLayout.CaptureFolder。
     /// </summary>
     private static bool TryResolveCaptureFolder(ServerState state, string? spec, out string fullPath, out string error)
     {
@@ -448,7 +457,7 @@ internal static class Program
         error    = string.Empty;
 
         bool hasProject = state.ProjectRoot.Length > 0;
-        var text = string.IsNullOrWhiteSpace(spec) ? DefaultCaptureFolder : spec.Trim();
+        var text = string.IsNullOrWhiteSpace(spec) ? ProjectLayout.Current.CaptureFolder : spec.Trim();
 
         try
         {

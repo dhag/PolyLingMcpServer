@@ -1,3 +1,11 @@
+#フォルダ名等、設定の保存場所
+はこのフォルダの
+ProjectLayout.json
+上記は、MCP用のフォルダ名の設定である。
+PolyLing用の設定の保存場所は
+C:\Users\<ユーザー名>\AppData\LocalLow\HagiharaLab\PolyLing\PolyLing\ProjectLayout.json
+である。
+
 # PolyLingMcpServer
 
 Console MCP server for working on a Unity project from an MCP client: reading and

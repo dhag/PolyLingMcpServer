@@ -73,7 +73,7 @@ public static class GuideRules
     public static string DefaultFolder(string projectRoot)
         => string.IsNullOrWhiteSpace(projectRoot)
             ? string.Empty
-            : Path.Combine(projectRoot, "Packages", "com.haglib.polyling", "McpGuide");
+            : Path.GetFullPath(Path.Combine(projectRoot, ProjectLayout.Current.GuideFolder));
 
     /// <summary>入門の本文。instructions にも載せる（届くクライアント向け）。</summary>
     public static string PrimerText()

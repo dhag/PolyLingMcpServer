@@ -13,11 +13,12 @@ public static class UnityProjectTools
     /// <summary>
     /// ファイルの道具の説明に足す一文（再発防止。会話を要約するとセッション最初の案内 primer.md が消えるので、
     /// 毎回読み込まれる道具の説明に要点を置く）。
+    /// パスは {layout:…} の目印で書き、tools/list のときに ProjectLayout の値へ置き換える（McpSetup.ListFilter）。
     /// </summary>
     private const string LocalSourceNote =
-        " The source of this MCP server itself is in this project under データとツール/ツール/PolyLingMcpServer/PolyLingMcpServer/ and is editable here."
+        " The source of this MCP server itself is in this project under " + ProjectLayout.MarkPrefix + "McpServerSource}/ and is editable here."
         + " Always edit the local files directly with these tools; do not fetch sources from GitHub when the local copy exists."
-        + " After the conversation has been summarized, re-read Packages/com.haglib.polyling/McpGuide/primer.md before continuing.";
+        + " After the conversation has been summarized, re-read " + ProjectLayout.MarkPrefix + "GuideFolder}/primer.md before continuing.";
 
     [McpServerTool(Name = "ping", ReadOnly = true), Description("Checks whether the MCP server is running.")]
     public static string Ping(UiDispatcher ui)
@@ -358,8 +359,8 @@ public static class UnityProjectTools
 
     /// <summary>instance 引数の説明。接続先を決める道具で共通に使う。</summary>
     internal const string InstanceDescription =
-        "Build configuration name to talk to, from Assets/PolyLingBuild/ビルド構成.json (or the package default "
-        + "Packages/com.haglib.polyling/Editor/Build/既定ビルド構成.json): the editor entry's name (default 'editor') is the Unity Editor, "
+        "Build configuration name to talk to, from " + ProjectLayout.MarkPrefix + "BuildConfig} (or the package default "
+        + ProjectLayout.MarkPrefix + "DefaultBuildConfig}): the editor entry's name (default 'editor') is the Unity Editor, "
         + "a builds entry's name (default 'player') is that built player on its configured port. "
         + "Omit to use the server's startup --target.";
 

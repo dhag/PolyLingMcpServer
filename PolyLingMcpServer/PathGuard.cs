@@ -16,9 +16,6 @@ namespace PolyLingMcpServer;
 /// </summary>
 public static class PathGuard
 {
-    /// <summary>直下に新規作成させないフォルダ（プロジェクト相対）。</summary>
-    private const string NoDirectWriteFolder = "データとツール";
-
     /// <summary>
     /// write_file / apply_patch が書ける拡張子。
     /// .csv / .mqo はテキスト形式なので確認用のファイルを置けるよう加えた
@@ -181,14 +178,15 @@ public static class PathGuard
     }
 
     /// <summary>
-    /// データとツールの直下に、新しいファイルやフォルダを作らせない。
+    /// データフォルダ（ProjectLayout.DataFolder）の直下に、新しいファイルやフォルダを作らせない。
     /// 既存ファイルの編集と、既存サブフォルダの中は通す。削除はここを通らない。
     /// Packages/com.haglib.polyling/Runtime/Poly_Ling_Main/Core/Config/PLSandbox.cs の
     /// IsAllowedInDataFolder と同じ規則。変えるときは両方を合わせること。
     /// </summary>
     private static void EnsureNotNewInDataFolder(ServerState state, string fullPath)
     {
-        var guarded = Path.GetFullPath(Path.Combine(state.ProjectRoot, NoDirectWriteFolder));
+        var layout = ProjectLayout.Current;
+        var guarded = Path.GetFullPath(Path.Combine(state.ProjectRoot, layout.DataFolder));
         var full = Path.GetFullPath(fullPath);
 
         if (!IsInside(guarded, full) || SamePath(guarded, full) || File.Exists(full))
@@ -201,8 +199,8 @@ public static class PathGuard
             return;
 
         throw new UnauthorizedAccessException(
-            $"Do not create new files or folders directly under {NoDirectWriteFolder}. "
-            + $"Use {NoDirectWriteFolder}/サンドボックス_シナリオ用 (scenario and runtime output) or SandBox (debugging).");
+            $"Do not create new files or folders directly under {layout.DataFolder}. "
+            + $"Use {layout.DataFolder}/{layout.ScenarioSandboxFolder} (scenario and runtime output) or {layout.DebugSandboxFolder} (debugging).");
     }
 
     // ================================================================

@@ -32,12 +32,12 @@ namespace PolyLingMcpServer;
 [McpServerToolType]
 public static class DeleteTools
 {
-    /// <summary>ゴミ箱の名前。ルート直下に作る。</summary>
-    public const string TrashFolderName = "_McpTrash";
+    /// <summary>ゴミ箱の名前（ProjectLayout.TrashFolder）。ルート直下に作る。</summary>
+    public static string TrashFolderName => ProjectLayout.Current.TrashFolder;
 
     [McpServerTool(Name = "delete_path", Destructive = true),
      Description("Deletes a file or folder inside one of the configured editable folders by moving it to a trash "
-               + "folder, so it can be put back by hand. The trash is <root>/" + TrashFolderName + "/<timestamp>/, "
+               + "folder, so it can be put back by hand. The trash is <root>/" + ProjectLayout.MarkPrefix + "TrashFolder}/<timestamp>/, "
                + "which keeps the path it had inside that root. A matching Unity .meta file is moved with it. "
                + "A folder that still has anything in it needs recursive=true. "
                + "Reach is the same as for writing: what this server cannot create, it cannot delete.")]

@@ -63,8 +63,11 @@ public sealed class BuildConfigEntry
 /// <summary>ビルド構成ファイルの読み込みと検査。Editor 側 PolyLingBuildConfigLoader と同じ順・同じ検査。</summary>
 public static class BuildConfigLoader
 {
-    public const string ProjectConfigPath = "Assets/PolyLingBuild/ビルド構成.json";
-    public const string DefaultConfigPath = "Packages/com.haglib.polyling/Editor/Build/既定ビルド構成.json";
+    /// <summary>ProjectLayout.BuildConfig。Editor 側 PolyLingBuildConfig.ProjectConfigPath と同じ場所。</summary>
+    public static string ProjectConfigPath => ProjectLayout.Current.BuildConfig;
+
+    /// <summary>ProjectLayout.DefaultBuildConfig。Editor 側 PolyLingBuildConfig.DefaultConfigPath と同じ場所。</summary>
+    public static string DefaultConfigPath => ProjectLayout.Current.DefaultBuildConfig;
 
     /// <summary>role に書ける値。</summary>
     public static readonly string[] Roles = { "server", "host", "collaborator", "separate", "none" };
@@ -244,8 +247,8 @@ public sealed record ResolvedInstance(
 
 public static class InstanceResolver
 {
-    /// <summary>PolyLingPlayerViewer.cs.meta（プロジェクト相対）。guid でシーンからの参照を探す。</summary>
-    private const string ViewerScriptMetaPath = "Packages/com.haglib.polyling/Runtime/Poly_Ling_Player/View/Core/PolyLingPlayerViewer.cs.meta";
+    /// <summary>PolyLingPlayerViewer.cs.meta（ProjectLayout.ViewerScriptMeta）。guid でシーンからの参照を探す。</summary>
+    private static string ViewerScriptMetaPath => ProjectLayout.Current.ViewerScriptMeta;
 
     /// <summary>Build Settings（プロジェクト相対）。構成の scenes が空のときに使う。</summary>
     private const string EditorBuildSettingsPath = "ProjectSettings/EditorBuildSettings.asset";

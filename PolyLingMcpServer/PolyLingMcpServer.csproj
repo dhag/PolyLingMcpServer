@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <!-- Unity プロジェクトの Packages フォルダ。この .csproj からの相対パスで指定する。
-       想定配置: <プロジェクト>\Packages\ と <プロジェクト>\データとツール\PolyLingMcpServer\PolyLingMcpServer\
+       想定配置: <プロジェクト>\Packages\ と <プロジェクト>\データとツール\ツール\PolyLingMcpServer\PolyLingMcpServer\
        配置が違う場合はこの 1 行だけ書き換える。 -->
   <PropertyGroup>
     <PolyLingPackagesDir>..\..\..\..\Packages</PolyLingPackagesDir>

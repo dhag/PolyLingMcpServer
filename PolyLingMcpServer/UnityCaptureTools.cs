@@ -62,7 +62,7 @@ public static class UnityCaptureTools
         [Description("What to photograph: MainView (the main 3D view), TriView (the viewport area including the three orthographic views), or Window (the whole window). "
                    + "Window is the only one that shows the panels, but it is also the one that exceeds the size limits first.")]
         string target = "MainView",
-        [Description("Sub-folder of this server's capture folder (set at startup, SandBox/Captures by default). "
+        [Description("Sub-folder of this server's capture folder (set at startup, " + ProjectLayout.MarkPrefix + "CaptureFolder} by default). "
                    + "Empty means the capture folder itself; missing folders are created. Absolute paths and '..' are rejected.")]
         string folder = "",
         [Description("Base of the file name. A serial number and .png are appended.")]

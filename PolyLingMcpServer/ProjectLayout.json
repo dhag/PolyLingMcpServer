@@ -1,0 +1,17 @@
+// PolyLingMcpServer が前提にするプロジェクト内の置き場所（すべて --project からの相対）。
+// exe のフォルダから親へたどって最初に見つかったものを使う。exe と同じフォルダに置けばそれが優先される。
+// bin/Debug/net8.0 で動かすときは、このソースフォルダのファイル（正本）が見つかる。どこにも無ければコードの既定値。
+// 書いた項目だけが既定値を上書きする。知らない項目名・絶対パスは起動エラーになる。
+// PolyLing 本体の設定（persistentDataPath/PolyLing/ProjectLayout.json）とは別物。
+{
+  "DataFolder": "データとツール",
+  "ScenarioSandboxFolder": "サンドボックス_シナリオ用",
+  "DebugSandboxFolder": "SandBox",
+  "CaptureFolder": "SandBox/Captures",
+  "TrashFolder": "_McpTrash",
+  "GuideFolder": "Packages/com.haglib.polyling/McpGuide",
+  "McpServerSource": "データとツール/ツール/PolyLingMcpServer/PolyLingMcpServer",
+  "BuildConfig": "Assets/PolyLingBuild/ビルド構成.json",
+  "DefaultBuildConfig": "Packages/com.haglib.polyling/Editor/Build/既定ビルド構成.json",
+  "ViewerScriptMeta": "Packages/com.haglib.polyling/Runtime/Poly_Ling_Player/View/Core/PolyLingPlayerViewer.cs.meta"
+}

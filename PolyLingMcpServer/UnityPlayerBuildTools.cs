@@ -42,8 +42,8 @@ public static class UnityPlayerBuildTools
 
     [McpServerTool(Name = "unity_build_player", Destructive = true),
      Description("Builds the PolyLing player for Windows 64-bit from a build configuration, overwriting the previous build. "
-               + "Configurations are read by the Editor from Assets/PolyLingBuild/ビルド構成.json, or from the package default "
-               + "Packages/com.haglib.polyling/Editor/Build/既定ビルド構成.json when that file does not exist. "
+               + "Configurations are read by the Editor from " + ProjectLayout.MarkPrefix + "BuildConfig}, or from the package default "
+               + ProjectLayout.MarkPrefix + "DefaultBuildConfig} when that file does not exist. "
                + "Each configuration has a name, scenes (empty means the scenes enabled in Build Settings), an exe, a remote role and a port. "
                + "config picks one configuration by name (default: the first one); all=true builds every configuration in order and stops at the first failure. "
                + "If the Editor is in Play mode it is stopped first, and the tool waits for Edit mode before building. "

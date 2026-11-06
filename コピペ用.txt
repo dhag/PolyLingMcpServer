@@ -1,7 +1,7 @@
 (1)ターミナルを開く。
 
 (2)下記をコピペで実行
-cd D:\UNITY保存の品\TEO3.0開発中\PolyLing\データとツール\PolyLingMcpServer
+cd D:\UNITY保存の品\TEO3.0開発中\PolyLing\データとツール\ツール\PolyLingMcpServer
 
 (3)サーバーを起動する。UnityEditor用かランタイムビルド用で異なる
 
@@ -35,7 +35,7 @@ UnityEditor用
 
  "mcpServers": {
     "unityPolyLing": {
-      "command": "D:\\UNITY保存の品\\TEO3.0開発中\\PolyLing\\データとツール\\PolyLingMcpServer\\PolyLingMcpServer\\bin\\Debug\\net8.0\\PolyLingMcpServer.exe",
+      "command": "D:\\UNITY保存の品\\TEO3.0開発中\\PolyLing\\データとツール\\ツール\\PolyLingMcpServer\\PolyLingMcpServer\\bin\\Debug\\net8.0\\PolyLingMcpServer.exe",
       "args": [
         "--project",
         "D:\\UNITY保存の品\\TEO3.0開発中\\PolyLing",
@@ -53,7 +53,7 @@ UnityEditor用
 
  "mcpServers": {
     "unityPolyLing": {
-      "command": "D:\\UNITY保存の品\\TEO3.0開発中\\PolyLing\\データとツール\\PolyLingMcpServer\\PolyLingMcpServer\\bin\\Debug\\net8.0\\PolyLingMcpServer.exe",
+      "command": "D:\\UNITY保存の品\\TEO3.0開発中\\PolyLing\\データとツール\\ツール\\PolyLingMcpServer\\PolyLingMcpServer\\bin\\Debug\\net8.0\\PolyLingMcpServer.exe",
       "args": [
         "--project",
         "D:\\UNITY保存の品\\TEO3.0開発中\\PolyLing",

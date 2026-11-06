@@ -112,6 +112,19 @@ public static class McpSetup
 
             var description = ProfileRules.DescriptionOverride(state.Profile, tool.Name);
             var schema = PatchSchema(state.Profile, tool.Name, tool.InputSchema);
+
+            // 説明文・引数の説明の {layout:…} を ProjectLayout の値にする（属性には定数しか書けないため）。
+            var baseDescription = description ?? tool.Description;
+            var expandedDescription = ProjectLayout.Expand(baseDescription ?? string.Empty);
+            if (baseDescription is not null && !ReferenceEquals(expandedDescription, baseDescription))
+                description = expandedDescription;
+
+            var baseSchema = schema ?? tool.InputSchema;
+            var rawSchema = baseSchema.GetRawText();
+            var expandedSchema = ProjectLayout.ExpandInJson(rawSchema);
+            if (!ReferenceEquals(expandedSchema, rawSchema))
+                schema = JsonDocument.Parse(expandedSchema).RootElement.Clone();
+
             kept.Add(description is null && schema is null
                 ? tool
                 : Copy(tool, description ?? tool.Description, schema ?? tool.InputSchema));
